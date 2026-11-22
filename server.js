@@ -1,4 +1,7 @@
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import { createIdentity } from './identity.js';
 import { Rooms } from './rooms.js';
@@ -8,8 +11,81 @@ import { viewFor } from './engine/views.js';
 const RATE_WINDOW_MS = 10000;
 const RATE_LIMIT = 60;
 
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+};
+
+const defaultStaticDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'client', 'dist');
+
+const statOf = (file) => {
+  try {
+    return fs.statSync(file);
+  } catch {
+    return null;
+  }
+};
+
+function reply(res, status) {
+  res.writeHead(status);
+  res.end();
+}
+
+function sendStatic(root, req, res) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return reply(res, 405);
+  let pathname;
+  try {
+    pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  } catch {
+    return reply(res, 400);
+  }
+  if (pathname.includes('\0')) return reply(res, 400);
+
+  const base = path.resolve(root);
+  let file = path.resolve(base, `.${pathname}`);
+  if (file !== base && !file.startsWith(base + path.sep)) return reply(res, 403);
+
+  let stat = statOf(file);
+  if (stat?.isDirectory()) {
+    file = path.join(file, 'index.html');
+    stat = statOf(file);
+  }
+  if (!stat?.isFile()) {
+    if (path.extname(pathname)) return reply(res, 404);
+    file = path.join(base, 'index.html');
+    stat = statOf(file);
+    if (!stat?.isFile()) return reply(res, 404);
+  }
+
+  const immutable = file.startsWith(path.join(base, 'assets') + path.sep);
+  res.writeHead(200, {
+    'Content-Type': CONTENT_TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'Content-Length': stat.size,
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return undefined;
+  }
+  fs.createReadStream(file)
+    .on('error', () => res.destroy())
+    .pipe(res);
+  return undefined;
+}
+
 export function createServer({
   clientOrigin = '*',
+  staticDir = defaultStaticDir,
   secret,
   gameConfig,
   graceMs = 30000,
@@ -29,8 +105,7 @@ export function createServer({
       res.end(JSON.stringify({ status: 'UP' }));
       return;
     }
-    res.writeHead(404);
-    res.end();
+    sendStatic(staticDir, req, res);
   });
 
   const io = new Server(httpServer, { cors: { origin: clientOrigin }, maxHttpBufferSize: 10000 });
@@ -49,6 +124,13 @@ export function createServer({
   const notify = (room) => {
     emitRoom(room);
     emitViews(room);
+  };
+
+  const say = (room, botId, line) => {
+    const result = rooms.postBotChat(room, botId, line, now());
+    if (result.error) return null;
+    io.to(`room:${room.code}`).emit('chat:message', result.message);
+    return result.message;
   };
 
   const cancelTtl = (code) => {
@@ -193,7 +275,7 @@ export function createServer({
     on('room:start', (data) => {
       const result = rooms.prepareStart(playerId, data.fillWithBots === true);
       if (result.error) return result;
-      const session = new GameSession(result.room, { now, rng, config: gameConfig, notify });
+      const session = new GameSession(result.room, { now, rng, config: gameConfig, notify, say });
       result.room.session = session;
       session.start();
       return { ok: true };
@@ -218,6 +300,7 @@ export function createServer({
       const result = rooms.postChat(room, playerId, data.text, now());
       if (result.error) return result;
       io.to(`room:${room.code}`).emit('chat:message', result.message);
+      room.session?.observeChat(result.message);
       return { ok: true };
     });
 

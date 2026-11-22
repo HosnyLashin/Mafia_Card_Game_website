@@ -87,6 +87,7 @@ export const gameView = (overrides = {}) => ({
   accused: null,
   voteCounts: null,
   canRevote: false,
+  skip: null,
   events: [],
   ...overrides,
 });

@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { io as ioClient } from 'socket.io-client';
 import { createServer } from '../server.js';
 
@@ -352,5 +356,135 @@ test('flooding a socket is rate limited', async () => {
     const replies = await Promise.all(Array.from({ length: 120 }, () => ask(client, 'room:leave', {})));
     assert.ok(replies.filter((r) => r.error === 'RATE_LIMITED').length >= 50);
     assert.ok(replies.some((r) => r.error === 'NOT_IN_ROOM'));
+  });
+});
+
+function rawGet(port, requestPath, method = 'GET') {
+  return new Promise((resolve, reject) => {
+    const request = http.request({ host: 'localhost', port, path: requestPath, method }, (response) => {
+      let body = '';
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+test('serves the built website and never leaves its folder', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mafia-static-'));
+  fs.mkdirSync(path.join(root, 'assets'));
+  fs.writeFileSync(path.join(root, 'index.html'), '<!doctype html><title>Mafia site</title>');
+  fs.writeFileSync(path.join(root, 'assets', 'app.js'), 'console.log(1)');
+  try {
+    await withServer({ staticDir: root }, async ({ port }) => {
+      const home = await rawGet(port, '/');
+      assert.equal(home.status, 200);
+      assert.match(home.headers['content-type'], /text\/html/);
+      assert.match(home.body, /Mafia site/);
+      assert.equal(home.headers['cache-control'], 'no-cache');
+
+      const asset = await rawGet(port, '/assets/app.js');
+      assert.equal(asset.status, 200);
+      assert.match(asset.headers['content-type'], /javascript/);
+      assert.match(asset.headers['cache-control'], /immutable/);
+      assert.equal(asset.headers['x-content-type-options'], 'nosniff');
+
+      const page = await rawGet(port, '/room/ABCD');
+      assert.equal(page.status, 200);
+      assert.match(page.body, /Mafia site/);
+
+      assert.equal((await rawGet(port, '/missing.js')).status, 404);
+      assert.equal((await rawGet(port, '/', 'POST')).status, 405);
+      assert.equal((await rawGet(port, '/', 'HEAD')).status, 200);
+
+      for (const attack of ['/..%2f..%2fpackage.json', '/%2e%2e/%2e%2e/package.json', '/..%5c..%5cpackage.json', '/%00']) {
+        const result = await rawGet(port, attack);
+        assert.ok(!result.body.includes('mafia-server'), attack);
+        assert.notEqual(result.status, 200, attack);
+      }
+
+      const health = await rawGet(port, '/health');
+      assert.equal(JSON.parse(health.body).status, 'UP');
+    });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('answers 404 when no website has been built', async () => {
+  await withServer({ staticDir: path.join(os.tmpdir(), 'mafia-no-such-folder') }, async ({ port }) => {
+    assert.equal((await rawGet(port, '/')).status, 404);
+    assert.equal(JSON.parse((await rawGet(port, '/health')).body).status, 'UP');
+  });
+});
+
+test('everyone alive agreeing ends the discussion early while bots wait for them', async () => {
+  const config = { seconds: { night: 1, report: 0.1, discussion: 8, vote: 1, defense: 0.4, revote: 0.3 } };
+  await withServer({ gameConfig: config }, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 3);
+    await ask(players[0], 'room:start', { fillWithBots: true });
+    await until(() => players.every((p) => view(p)));
+    players.forEach((p) => ask(p, 'game:action', { action: { type: 'night', target: null } }));
+    await until(() => players.every((p) => view(p)?.phase === 'discussion'), 8000);
+
+    const alive = players.filter((p) => view(p).me.alive);
+    assert.ok(alive.length >= 2);
+    assert.deepEqual(view(alive[0]).skip, { needed: alive.length, agreed: 0, mine: false });
+
+    const started = Date.now();
+    for (const player of alive.slice(0, -1)) {
+      assert.equal((await ask(player, 'game:action', { action: { type: 'skip', agree: true } })).ok, true);
+    }
+    await sleep(300);
+    assert.equal(view(alive[0]).phase, 'discussion');
+    assert.equal(view(alive[0]).skip.agreed, alive.length - 1);
+    await ask(alive.at(-1), 'game:action', { action: { type: 'skip', agree: true } });
+    await until(() => view(alive[0])?.phase === 'vote', 3000);
+    assert.ok(Date.now() - started < 5000);
+    assert.ok(view(alive[0]).events.some((e) => e.key === 'discussion.skipped'));
+    assert.equal(view(alive[0]).skip, null);
+  });
+});
+
+test('bots talk in the chat with translatable lines', async () => {
+  const config = { seconds: { night: 1, report: 0.1, discussion: 5, vote: 1, defense: 0.4, revote: 0.3 } };
+  await withServer({ gameConfig: config }, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 2);
+    await ask(players[0], 'room:start', { fillWithBots: true });
+    await until(() => players.every((p) => view(p)));
+    players.forEach((p) => ask(p, 'game:action', { action: { type: 'night', target: null } }));
+
+    const botLines = () => players[0].log.filter((e) => e.event === 'chat:message' && e.payload.template);
+    await until(() => botLines().length >= 3, 12000);
+    for (const { payload } of botLines()) {
+      assert.equal(payload.text, null);
+      assert.match(payload.name, /^Bot \d$/);
+      assert.equal(payload.phase, 'discussion');
+      assert.ok(Number.isInteger(payload.template.variant));
+      assert.equal(typeof payload.template.key, 'string');
+    }
+    const speakers = new Set(botLines().map((e) => e.payload.playerId));
+    assert.ok(speakers.size >= 2);
+    assert.ok(players[1].log.some((e) => e.event === 'chat:message' && e.payload.template));
+  });
+});
+
+test('bot chat lines are validated before they are posted', async () => {
+  await withServer({}, async ({ connect, server }) => {
+    const { players, code } = await fillRoom(connect, 2);
+    await ask(players[0], 'room:start', { fillWithBots: true });
+    await until(() => players.every((p) => view(p)));
+    const room = server.rooms.get(code);
+    const bot = room.players.find((p) => p.isBot);
+    room.game.phase = 'discussion';
+    const now = Date.now();
+    assert.equal(server.rooms.postBotChat(room, bot.id, { key: 'nope', variant: 0, params: {} }, now).error, 'INVALID_LINE');
+    assert.equal(server.rooms.postBotChat(room, bot.id, { key: 'open', variant: 9, params: {} }, now).error, 'INVALID_LINE');
+    assert.equal(server.rooms.postBotChat(room, bot.id, { key: 'open', variant: 0, params: { html: 'x' } }, now).error, 'INVALID_LINE');
+    assert.equal(server.rooms.postBotChat(room, players[0].playerId, { key: 'open', variant: 0, params: {} }, now).error, 'NOT_IN_ROOM');
+    assert.ok(server.rooms.postBotChat(room, bot.id, { key: 'open', variant: 0, params: {} }, now + 5000).message);
   });
 });

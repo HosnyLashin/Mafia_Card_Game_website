@@ -350,3 +350,81 @@ describe('describeEvent', () => {
     expect(describeEvent({ key: 'game.over', params: {} }, players, t)).toBeNull();
   });
 });
+
+describe('skipping the discussion', () => {
+  const discussing = (skip, me = {}) =>
+    withMe({ awaitingAction: false, ...me }, { phase: 'discussion', skip });
+
+  it('shows how many agreed and lets the player agree and take it back', async () => {
+    const env = setup();
+    await enterGame(env, discussing({ needed: 4, agreed: 1, mine: false }));
+    expect(screen.getByText('1 of 4 agreed to skip')).toBeInTheDocument();
+    env.replies['game:action'] = { ok: true };
+    await userEvent.click(screen.getByRole('button', { name: 'Skip the discussion' }));
+    expect(actions(env)).toEqual([{ type: 'skip', agree: true }]);
+
+    act(() => env.fire('game:view', discussing({ needed: 4, agreed: 2, mine: true })));
+    const button = screen.getByRole('button', { name: 'You agreed to skip. Tap to take it back.' });
+    expect(button).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(button);
+    expect(actions(env).at(-1)).toEqual({ type: 'skip', agree: false });
+  });
+
+  it('hides the skip button from the dead and outside the discussion', async () => {
+    const env = setup();
+    await enterGame(env, discussing({ needed: 3, agreed: 0, mine: false }, { alive: false }));
+    expect(screen.queryByRole('button', { name: 'Skip the discussion' })).toBeNull();
+    act(() => env.fire('game:view', gameView({ phase: 'vote' })));
+    expect(screen.queryByRole('button', { name: 'Skip the discussion' })).toBeNull();
+  });
+
+  it('announces a skipped discussion in the story', async () => {
+    const env = setup();
+    const events = [{ seq: 0, day: 1, key: 'discussion.skipped', params: {} }];
+    await enterGame(env, discussing({ needed: 3, agreed: 3, mine: true }, {}));
+    act(() => env.fire('game:view', withMe({ awaitingAction: false }, { phase: 'discussion', skip: { needed: 3, agreed: 3, mine: true }, events })));
+    expect(screen.getByLabelText('What happened')).toHaveTextContent('Everyone agreed to skip the discussion.');
+  });
+
+  it('shows the skip controls in Arabic', async () => {
+    const env = setup({ lang: 'ar' });
+    await enterGame(env, discussing({ needed: 4, agreed: 1, mine: false }));
+    expect(screen.getByRole('button', { name: 'تخطَّ النقاش' })).toBeInTheDocument();
+    expect(screen.getByText('وافق 1 من 4 على التخطي')).toBeInTheDocument();
+  });
+});
+
+describe('bot chat messages', () => {
+  const botMessage = (id, key, variant, target) => ({
+    id,
+    playerId: 'bot-1',
+    name: 'Bot 1',
+    text: null,
+    template: { key, variant, params: target ? { target } : {} },
+    day: 1,
+    phase: 'discussion',
+    at: id,
+  });
+
+  it('shows the same bot line in the language of each reader, with names filled in', async () => {
+    const env = setup();
+    await enterGame(env, gameView({ phase: 'discussion' }));
+    act(() => env.fire('room:state', lobbyState({ phase: 'playing', players: [
+      { id: 'g_me', name: 'Hosny', isBot: false, connected: true, left: false },
+      { id: 'g_b', name: 'Dana', isBot: false, connected: true, left: false },
+      { id: 'bot-1', name: 'Bot 1', isBot: true, connected: false, left: false },
+    ] })));
+    act(() => env.fire('chat:message', botMessage(1, 'suspect', 0, 'g_b')));
+    expect(screen.getByText('I suspect Dana. They have been acting strange.')).toBeInTheDocument();
+    expect(screen.getByText('Bot 1')).toBeInTheDocument();
+  });
+
+  it('shows bot lines in Arabic and handles lines without a target', async () => {
+    const env = setup({ lang: 'ar' });
+    await enterGame(env, gameView({ phase: 'discussion' }));
+    act(() => env.fire('chat:message', botMessage(1, 'filler', 1)));
+    act(() => env.fire('chat:message', botMessage(2, 'suspect', 1, 'unknown-id')));
+    expect(screen.getByText('لنقارن ما قاله كل واحد.')).toBeInTheDocument();
+    expect(screen.getByText('هناك شيء في ? يزعجني.')).toBeInTheDocument();
+  });
+});

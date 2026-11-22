@@ -7,8 +7,9 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test tests/server.test.js tests/engine.test.js",
-    "simulate": "node engine/simulate.js"
+    "test": "node --test tests/server.test.js tests/engine.test.js tests/bots.test.js",
+    "simulate": "node engine/simulate.js",
+    "build": "npm install --prefix client --include=dev && npm run build --prefix client"
   },
   "dependencies": {
     "socket.io": "^4.7.5"

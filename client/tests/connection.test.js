@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import { createConnection } from '../src/net/connection.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createConnection, defaultServerUrl } from '../src/net/connection.js';
 import { createFakeIo, lobbyState } from './helpers.jsx';
 
 function make(options = {}) {
@@ -98,5 +98,29 @@ describe('connection store', () => {
     stop();
     env.fire('session', { playerId: 'b', token: 'b.s' });
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('server address', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('uses the page address in production', () => {
+    vi.stubEnv('PROD', true);
+    vi.stubEnv('VITE_SERVER_URL', '');
+    expect(defaultServerUrl()).toBe(window.location.origin);
+  });
+
+  it('uses port 3000 on the same host while developing', () => {
+    vi.stubEnv('PROD', false);
+    vi.stubEnv('VITE_SERVER_URL', '');
+    expect(defaultServerUrl()).toBe(`${window.location.protocol}//${window.location.hostname}:3000`);
+  });
+
+  it('prefers an explicit server address', () => {
+    vi.stubEnv('PROD', true);
+    vi.stubEnv('VITE_SERVER_URL', 'https://example.test');
+    expect(defaultServerUrl()).toBe('https://example.test');
   });
 });

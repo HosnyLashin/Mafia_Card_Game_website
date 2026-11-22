@@ -647,3 +647,14 @@ input:focus {
   flex: 1;
   min-width: 0;
 }
+
+.skip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.skip [aria-pressed='true'] {
+  background: var(--ivory);
+  color: var(--card-ink);
+}

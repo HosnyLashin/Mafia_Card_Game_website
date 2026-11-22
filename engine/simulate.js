@@ -1,8 +1,9 @@
 import { createGame, submit, tick, alivePlayers, Phase, Role } from './engine.js';
-import { botAction } from './bots.js';
+import { createBotTeam } from './bots.js';
 import { createRng } from './rng.js';
 
 const ACTION_PHASES = new Set([Phase.NIGHT, Phase.VOTE, Phase.REVOTE]);
+const CHAT_PHASES = new Set([Phase.DISCUSSION, Phase.DEFENSE]);
 
 function assertInvariants(game) {
   const alive = alivePlayers(game);
@@ -27,23 +28,37 @@ export function simulateGame(seed, { afkRate = 0 } = {}) {
   }));
   const game = createGame({ players, rng, now: 0 });
 
+  const team = createBotTeam(game, rng);
+  const chatted = new Set();
   let steps = 0;
   while (game.phase !== Phase.ENDED) {
     if (steps++ > 2000) throw new Error(`stuck game seed=${seed}`);
-    const before = `${game.phase}:${game.day}`;
+    const key = `${game.phase}:${game.day}`;
+    team.sync();
 
     if (ACTION_PHASES.has(game.phase)) {
       for (const player of [...alivePlayers(game)]) {
-        if (game.phase === Phase.ENDED || `${game.phase}:${game.day}` !== before) break;
+        if (game.phase === Phase.ENDED || `${game.phase}:${game.day}` !== key) break;
         if (rng() < afkRate) continue;
-        const action = botAction(game, player.id, rng);
+        const action = team.act(player.id);
         if (!action) continue;
         const result = submit(game, player.id, action, game.deadline);
         if (result.error) throw new Error(`bad bot action ${result.error} seed=${seed}`);
       }
     }
 
-    if (game.phase !== Phase.ENDED && `${game.phase}:${game.day}` === before) {
+    if (CHAT_PHASES.has(game.phase) && !chatted.has(key)) {
+      chatted.add(key);
+      const turns = game.phase === Phase.DISCUSSION ? 3 : 1;
+      for (let turn = 0; turn < turns; turn++) {
+        for (const player of alivePlayers(game)) {
+          const template = team.nextLine(player.id);
+          if (template) team.observeChat({ playerId: player.id, day: game.day, phase: game.phase, template });
+        }
+      }
+    }
+
+    if (game.phase !== Phase.ENDED && `${game.phase}:${game.day}` === key) {
       tick(game, game.deadline);
     }
     assertInvariants(game);

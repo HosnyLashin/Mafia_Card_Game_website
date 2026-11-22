@@ -78,6 +78,7 @@ export function createGame({ players, config, rng = Math.random, now = 0 }) {
     nightActions: {},
     votes: {},
     revotes: {},
+    skipVotes: {},
     accused: null,
     accusedVoters: [],
     defenseUsed: [],
@@ -129,18 +130,43 @@ function revoteAction(game, player, action) {
   return ok();
 }
 
+function skipAction(game, player, action) {
+  if (action.type !== 'skip') return fail('WRONG_ACTION');
+  game.skipVotes[player.id] = action.agree !== false;
+  return ok();
+}
+
 const handlers = {
   [Phase.NIGHT]: nightAction,
+  [Phase.DISCUSSION]: skipAction,
   [Phase.VOTE]: voteAction,
   [Phase.REVOTE]: revoteAction,
 };
 
 const has = (object, key) => Object.hasOwn(object, key);
 
+const aliveHumans = (game) => alivePlayers(game).filter((p) => !p.isBot);
+
+function skipAgreed(game) {
+  const humans = aliveHumans(game);
+  return humans.length > 0 && humans.every((p) => game.skipVotes[p.id] === true);
+}
+
+export function skipStatus(game, playerId) {
+  const humans = aliveHumans(game);
+  return {
+    needed: humans.length,
+    agreed: humans.filter((p) => game.skipVotes[p.id] === true).length,
+    mine: game.skipVotes[playerId] === true,
+  };
+}
+
 function isComplete(game) {
   switch (game.phase) {
     case Phase.NIGHT:
       return alivePlayers(game).every((p) => has(game.nightActions, p.id));
+    case Phase.DISCUSSION:
+      return skipAgreed(game);
     case Phase.VOTE:
       return alivePlayers(game).every((p) => has(game.votes, p.id));
     case Phase.REVOTE:
@@ -224,6 +250,7 @@ function nextNight(game, now) {
   game.nightActions = {};
   game.votes = {};
   game.revotes = {};
+  game.skipVotes = {};
   game.accused = null;
   game.accusedVoters = [];
   game.voteResult = null;
@@ -334,9 +361,11 @@ export function advance(game, now) {
       resolveNight(game, now);
       break;
     case Phase.REPORT:
+      game.skipVotes = {};
       schedule(game, Phase.DISCUSSION, now);
       break;
     case Phase.DISCUSSION:
+      if (skipAgreed(game)) emit(game, 'discussion.skipped');
       game.votes = {};
       schedule(game, Phase.VOTE, now);
       break;

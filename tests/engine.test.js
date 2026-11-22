@@ -4,8 +4,8 @@ import { createGame, submit, tick, alivePlayers, findPlayer, awaitingAction, Pha
 import { viewFor } from '../engine/views.js';
 import { createRng } from '../engine/rng.js';
 
-function makeGame({ count = 6, roles = {}, config = {}, seed = 1 } = {}) {
-  const players = Array.from({ length: count }, (_, i) => ({ id: `p${i + 1}`, name: `P${i + 1}` }));
+function makeGame({ count = 6, roles = {}, config = {}, seed = 1, bots = [] } = {}) {
+  const players = Array.from({ length: count }, (_, i) => ({ id: `p${i + 1}`, name: `P${i + 1}`, isBot: bots.includes(`p${i + 1}`) }));
   const game = createGame({ players, config, rng: createRng(seed), now: 0 });
   const defaults = { p1: 'mafia', p2: 'doctor', p3: 'police' };
   game.players.forEach((p) => {
@@ -55,7 +55,9 @@ test('creation enforces minimum players and assigns roles', () => {
   assert.equal(count(six, 'citizen'), 3);
 
   const nine = createGame({ players: Array.from({ length: 9 }, (_, i) => ({ id: `b${i}`, name: 'b' })), rng });
-  assert.equal(count(nine, 'mafia'), 2);
+  assert.equal(count(nine, 'mafia'), 1);
+  const eleven = createGame({ players: Array.from({ length: 11 }, (_, i) => ({ id: `c${i}`, name: 'c' })), rng });
+  assert.equal(count(eleven, 'mafia'), 2);
 });
 
 test('duplicate ids are rejected', () => {
@@ -376,4 +378,75 @@ test('actions are refused after the game ends', () => {
   assert.equal(game.phase, Phase.ENDED);
   assert.deepEqual(submit(game, 'p1', { type: 'night', target: null }, 0), { error: 'GAME_ENDED' });
   assert.equal(viewFor(game, 'p3').players.find((p) => p.id === 'p1').role, 'mafia');
+});
+
+const humansAgree = (game, ids, agree = true) =>
+  ids.forEach((id) => submit(game, id, { type: 'skip', agree }, game.deadline));
+
+test('the discussion ends early when every living human agrees to skip', () => {
+  const game = makeGame();
+  nightWith(game);
+  goto(game, Phase.DISCUSSION);
+  humansAgree(game, ['p1', 'p2', 'p3', 'p4', 'p5']);
+  assert.equal(game.phase, Phase.DISCUSSION);
+  humansAgree(game, ['p6']);
+  assert.equal(game.phase, Phase.VOTE);
+  assert.ok(game.events.some((e) => e.key === 'discussion.skipped'));
+});
+
+test('one player who does not agree keeps the discussion running until the timer', () => {
+  const game = makeGame();
+  nightWith(game);
+  goto(game, Phase.DISCUSSION);
+  humansAgree(game, ['p1', 'p2', 'p3', 'p4', 'p5']);
+  tick(game, game.deadline);
+  assert.equal(game.phase, Phase.VOTE);
+  assert.ok(!game.events.some((e) => e.key === 'discussion.skipped'));
+});
+
+test('a player can take back their agreement', () => {
+  const game = makeGame();
+  nightWith(game);
+  goto(game, Phase.DISCUSSION);
+  humansAgree(game, ['p1', 'p2', 'p3', 'p4', 'p5']);
+  humansAgree(game, ['p1'], false);
+  humansAgree(game, ['p6']);
+  assert.equal(game.phase, Phase.DISCUSSION);
+  assert.equal(viewFor(game, 'p2').skip.agreed, 5);
+});
+
+test('bots and dead players never block a skip', () => {
+  const game = makeGame({ bots: ['p4', 'p5', 'p6'] });
+  nightWith(game, { p1: 'p6' });
+  assert.equal(findPlayer(game, 'p6').alive, false);
+  goto(game, Phase.DISCUSSION);
+  assert.deepEqual(viewFor(game, 'p1').skip, { needed: 3, agreed: 0, mine: false });
+  humansAgree(game, ['p1', 'p2']);
+  assert.equal(game.phase, Phase.DISCUSSION);
+  humansAgree(game, ['p3']);
+  assert.equal(game.phase, Phase.VOTE);
+});
+
+test('dead players cannot vote to skip and skipping is only for the discussion', () => {
+  const game = makeGame();
+  assert.deepEqual(submit(game, 'p1', { type: 'skip' }, 0), { error: 'WRONG_ACTION' });
+  nightWith(game, { p1: 'p4' });
+  goto(game, Phase.DISCUSSION);
+  assert.deepEqual(submit(game, 'p4', { type: 'skip' }, 0), { error: 'DEAD' });
+  assert.deepEqual(submit(game, 'p1', { type: 'night', target: null }, 0), { error: 'WRONG_ACTION' });
+  goto(game, Phase.VOTE);
+  assert.deepEqual(submit(game, 'p1', { type: 'skip' }, 0), { error: 'WRONG_ACTION' });
+});
+
+test('skip agreements reset every day and are hidden outside the discussion', () => {
+  const game = makeGame();
+  nightWith(game);
+  goto(game, Phase.DISCUSSION);
+  humansAgree(game, ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+  voteWith(game);
+  assert.equal(game.phase, Phase.NIGHT);
+  assert.equal(viewFor(game, 'p1').skip, null);
+  nightWith(game);
+  goto(game, Phase.DISCUSSION);
+  assert.deepEqual(viewFor(game, 'p1').skip, { needed: 6, agreed: 0, mine: false });
 });

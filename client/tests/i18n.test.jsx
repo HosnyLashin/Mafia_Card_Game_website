@@ -89,3 +89,27 @@ describe('language provider', () => {
     expect(screen.getByText('إنشاء غرفة')).toBeInTheDocument();
   });
 });
+
+describe('bot chat lines', () => {
+  it('has every line the bots can say in every language', async () => {
+    const { LINE_CATEGORIES, LINE_VARIANTS } = await import('../../engine/botlines.js');
+    for (const code of Object.keys(languages)) {
+      for (const category of LINE_CATEGORIES) {
+        for (let variant = 0; variant < LINE_VARIANTS; variant++) {
+          expect(languages[code].messages[`bot.say.${category}.${variant}`], `${code} ${category} ${variant}`).toBeTruthy();
+        }
+      }
+    }
+  });
+
+  it('uses {target} only for lines that name a player', async () => {
+    const { LINE_CATEGORIES, LINE_VARIANTS } = await import('../../engine/botlines.js');
+    const named = new Set(['mourn', 'suspect', 'quiet', 'agree', 'ask', 'claimPolice', 'counter', 'cleared']);
+    for (const category of LINE_CATEGORIES) {
+      for (let variant = 0; variant < LINE_VARIANTS; variant++) {
+        const text = languages.en.messages[`bot.say.${category}.${variant}`];
+        expect(text.includes('{target}'), `${category} ${variant}`).toBe(named.has(category));
+      }
+    }
+  });
+});

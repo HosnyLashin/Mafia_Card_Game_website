@@ -1,4 +1,4 @@
-import { Phase, Role, findPlayer, awaitingAction } from './engine.js';
+import { Phase, Role, findPlayer, awaitingAction, skipStatus } from './engine.js';
 
 function canSeeRole(game, viewer, target) {
   if (game.phase === Phase.ENDED) return true;
@@ -35,6 +35,7 @@ export function viewFor(game, viewerId) {
     accused: game.accused,
     voteCounts: game.voteResult ? game.voteResult.counts : null,
     canRevote: game.phase === Phase.REVOTE && game.accusedVoters.includes(viewerId),
+    skip: game.phase === Phase.DISCUSSION ? skipStatus(game, viewerId) : null,
     events: game.events,
   };
 }

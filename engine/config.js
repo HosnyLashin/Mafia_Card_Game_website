@@ -1,7 +1,7 @@
 export const defaultConfig = {
   minPlayers: 6,
   maxPlayers: 12,
-  mafiaThresholds: [{ minPlayers: 9, mafia: 2 }],
+  mafiaThresholds: [{ minPlayers: 11, mafia: 2 }],
   seconds: {
     night: 30,
     report: 8,

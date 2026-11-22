@@ -16,6 +16,7 @@ export function describeEvent(event, players, t) {
     case 'police.right':
     case 'police.wrong':
     case 'vote.tied':
+    case 'discussion.skipped':
       return t(`event.${key}`);
     default:
       return null;

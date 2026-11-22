@@ -1,8 +1,18 @@
 import { cleanName, cleanMessage } from './text.js';
+import { LINE_CATEGORIES, LINE_VARIANTS } from './engine/botlines.js';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const CHAT_INTERVAL_MS = 700;
 const CHAT_HISTORY = 200;
+
+const validLine = (line) =>
+  Boolean(line) &&
+  LINE_CATEGORIES.includes(line.key) &&
+  Number.isInteger(line.variant) &&
+  line.variant >= 0 &&
+  line.variant < LINE_VARIANTS &&
+  typeof line.params === 'object' &&
+  Object.entries(line.params).every(([name, value]) => name === 'target' && typeof value === 'string' && value.length <= 40);
 
 const member = (id, name, isBot = false) => ({ id, name, isBot, connected: !isBot, left: false });
 const isHuman = (p) => !p.isBot && !p.left;
@@ -184,6 +194,31 @@ export class Rooms {
       at: now,
       day: room.game ? room.game.day : 0,
       phase: room.game ? room.game.phase : room.phase,
+    };
+    room.chat.push(message);
+    if (room.chat.length > CHAT_HISTORY) room.chat.shift();
+    return { message };
+  }
+
+  postBotChat(room, botId, line, now) {
+    const bot = room.players.find((p) => p.id === botId && p.isBot);
+    if (!bot) return { error: 'NOT_IN_ROOM' };
+    const blocked = this.chatBlock(room, botId);
+    if (blocked) return { error: blocked };
+    if (!validLine(line)) return { error: 'INVALID_LINE' };
+    const last = room.lastChat.get(botId) ?? 0;
+    if (now - last < CHAT_INTERVAL_MS) return { error: 'CHAT_RATE_LIMITED' };
+    room.lastChat.set(botId, now);
+    room.chatSeq += 1;
+    const message = {
+      id: room.chatSeq,
+      playerId: botId,
+      name: bot.name,
+      text: null,
+      template: { key: line.key, variant: line.variant, params: { ...line.params } },
+      at: now,
+      day: room.game.day,
+      phase: room.game.phase,
     };
     room.chat.push(message);
     if (room.chat.length > CHAT_HISTORY) room.chat.shift();

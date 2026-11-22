@@ -10,6 +10,11 @@ export default function Chat({ canSend, closedKey }) {
   const [error, setError] = useState(null);
   const listRef = useRef(null);
   const messages = state.chat;
+  const nameOf = (id) => state.room?.players.find((p) => p.id === id)?.name ?? '?';
+  const bodyOf = (message) =>
+    message.template
+      ? t(`bot.say.${message.template.key}.${message.template.variant}`, { target: nameOf(message.template.params?.target) })
+      : message.text;
 
   useEffect(() => {
     const list = listRef.current;
@@ -42,7 +47,7 @@ export default function Chat({ canSend, closedKey }) {
               {divider && <li className="chat-day">{t('chat.day', { day: message.day })}</li>}
               <li className={message.playerId === state.playerId ? 'msg mine' : 'msg'}>
                 <bdi className="msg-name">{message.name}</bdi>
-                <span dir="auto">{message.text}</span>
+                <span dir="auto">{bodyOf(message)}</span>
               </li>
             </Fragment>
           );

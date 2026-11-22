@@ -100,5 +100,6 @@ export function createConnection({ url, storage, ioFactory = io, timeoutMs = 800
 export function defaultServerUrl() {
   const configured = import.meta.env?.VITE_SERVER_URL;
   if (configured) return configured;
+  if (import.meta.env?.PROD) return window.location.origin;
   return `${window.location.protocol}//${window.location.hostname}:3000`;
 }

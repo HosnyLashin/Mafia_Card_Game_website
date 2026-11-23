@@ -3,13 +3,20 @@ import { useI18n } from '../i18n/index.jsx';
 import { useConnection } from '../net/ConnectionProvider.jsx';
 import ErrorText from './ErrorText.jsx';
 
-export default function Chat({ canSend, closedKey }) {
+export default function Chat({
+  canSend,
+  closedKey,
+  channel = 'main',
+  titleKey = 'chat.title',
+  emptyKey = 'chat.empty',
+  hintKey = null,
+}) {
   const { t } = useI18n();
   const { state, request } = useConnection();
   const [text, setText] = useState('');
   const [error, setError] = useState(null);
   const listRef = useRef(null);
-  const messages = state.chat;
+  const messages = state.chat.filter((message) => (message.channel ?? 'main') === channel);
   const nameOf = (id) => state.room?.players.find((p) => p.id === id)?.name ?? '?';
   const bodyOf = (message) =>
     message.template
@@ -36,9 +43,10 @@ export default function Chat({ canSend, closedKey }) {
 
   let lastDay = null;
   return (
-    <section className="chat" aria-label={t('chat.title')}>
+    <section className={channel === 'dead' ? 'chat dead-chat' : 'chat'} aria-label={t(titleKey)}>
+      {hintKey && <p className="hint">{t(hintKey)}</p>}
       <ol ref={listRef} className="chat-list">
-        {messages.length === 0 && <li className="chat-empty">{t('chat.empty')}</li>}
+        {messages.length === 0 && <li className="chat-empty">{t(emptyKey)}</li>}
         {messages.map((message) => {
           const divider = message.day > 0 && message.day !== lastDay;
           lastDay = message.day;
@@ -56,7 +64,7 @@ export default function Chat({ canSend, closedKey }) {
       {canSend ? (
         <form className="chat-form" onSubmit={send}>
           <input
-            aria-label={t('chat.placeholder')}
+            aria-label={`${t(titleKey)}: ${t('chat.placeholder')}`}
             placeholder={t('chat.placeholder')}
             value={text}
             maxLength={200}

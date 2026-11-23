@@ -63,7 +63,7 @@ test('bots only ever make legal moves and games always finish', () => {
   assert.ok(stalemates < 8, `too many stalemates: ${stalemates}`);
 });
 
-test('a police bot that finds the mafia remembers it, votes for it and says so', () => {
+test('a police bot that finds the mafia remembers it, votes for it and pushes without revealing itself', () => {
   const { game, team } = botGame();
   botsAct(game, team, { p3: { type: 'night', target: 'p1' } });
   goto(game, team, Phase.REPORT);
@@ -71,7 +71,7 @@ test('a police bot that finds the mafia remembers it, votes for it and says so',
   assert.ok(team.knowledge('p3').known.has('p1'));
   goto(game, team, Phase.DISCUSSION);
   const line = team.nextLine('p3');
-  assert.equal(line.key, 'claimPolice');
+  assert.equal(line.key, 'sure');
   assert.deepEqual(line.params, { target: 'p1' });
   goto(game, team, Phase.VOTE);
   assert.deepEqual(team.act('p3'), { type: 'vote', target: 'p1' });
@@ -84,15 +84,17 @@ test('a cleared player is never voted for by the police bot', () => {
   assert.equal(game.report.policeResult, 'wrong');
   assert.ok(team.knowledge('p3').cleared.has('p4'));
   goto(game, team, Phase.DISCUSSION);
+  let announced = null;
+  for (let i = 0; i < 40 && !announced; i++) {
+    const line = team.nextLine('p3');
+    if (line?.key === 'vouch') announced = line;
+  }
+  assert.ok(announced);
+  assert.deepEqual(announced.params, { target: 'p4' });
   say(team, game, 'p5', 'I think P4 is the mafia');
   say(team, game, 'p6', 'P4 is acting strange');
   goto(game, team, Phase.VOTE);
   for (let i = 0; i < 30; i++) assert.notEqual(team.act('p3').target, 'p4');
-  let announced = null;
-  for (let i = 0; i < 30 && !announced; i++) {
-    const line = team.nextLine('p3');
-    if (line?.key === 'cleared') announced = line;
-  }
 });
 
 test('mafia bots pick the same victim and never a partner', () => {
@@ -170,22 +172,24 @@ test('bot lines are valid, do not repeat within a day and stay quiet when dead',
   const { game, team } = botGame();
   botsAct(game, team);
   goto(game, team, Phase.DISCUSSION);
+  const speaker = alivePlayers(game).find((p) => p.role === 'citizen').id;
   const seen = new Set();
   const alive = new Set(alivePlayers(game).map((p) => p.id));
   for (let i = 0; i < 40; i++) {
-    const line = team.nextLine('p5');
+    const line = team.nextLine(speaker);
     if (!line) continue;
     assert.ok(LINE_CATEGORIES.includes(line.key));
     assert.ok(line.variant >= 0 && line.variant < LINE_VARIANTS);
-    if (line.params.target) assert.ok(alive.has(line.params.target));
+    if (line.key === 'mourn') assert.equal(line.params.target, game.report.victimId);
+    else if (line.params.target) assert.ok(alive.has(line.params.target));
     const signature = `${line.key}:${line.params.target ?? ''}`;
     assert.ok(!seen.has(signature), signature);
     seen.add(signature);
   }
   assert.ok(seen.size > 2);
-  findPlayer(game, 'p5').alive = false;
-  assert.equal(team.nextLine('p5'), null);
-  assert.equal(team.act('p5'), null);
+  findPlayer(game, speaker).alive = false;
+  assert.equal(team.nextLine(speaker), null);
+  assert.equal(team.act(speaker), null);
 });
 
 test('only the accused bot speaks during the defense', () => {
@@ -194,7 +198,7 @@ test('only the accused bot speaks during the defense', () => {
   goto(game, team, Phase.VOTE);
   const votes = { p1: 'p4', p2: 'p4', p3: 'p4', p4: 'p1', p5: 'p4', p6: 'p4' };
   Object.entries(votes).forEach(([id, target]) => submit(game, id, { type: 'vote', target }, game.deadline));
-  assert.equal(game.phase, Phase.DEFENSE);
+  goto(game, team, Phase.DEFENSE);
   assert.equal(team.nextLine('p4').key, 'defense');
   assert.equal(team.nextLine('p2'), null);
   assert.equal(team.nextLine('p4'), null);
@@ -222,4 +226,31 @@ test('bots do not act when nothing is expected of them', () => {
   assert.equal(team.act('p2'), null);
   goto(game, team, Phase.DISCUSSION);
   assert.equal(team.act('p2'), null);
+});
+
+test('no bot ever says it is the police', () => {
+  assert.ok(!LINE_CATEGORIES.includes('claimPolice'));
+  assert.ok(!LINE_CATEGORIES.includes('cleared'));
+  const { game, team } = botGame();
+  botsAct(game, team, { p3: { type: 'night', target: 'p1' } });
+  goto(game, team, Phase.DISCUSSION);
+  const keys = new Set();
+  for (let i = 0; i < 60; i++) {
+    const line = team.nextLine('p3');
+    if (line) keys.add(line.key);
+  }
+  assert.ok(keys.has('sure'));
+  [...keys].forEach((key) => assert.ok(LINE_CATEGORIES.includes(key)));
+});
+
+test('a push from the police bot moves the other bots against the mafia', () => {
+  const { game, team } = botGame();
+  botsAct(game, team, { p3: { type: 'night', target: 'p1' } });
+  goto(game, team, Phase.DISCUSSION);
+  const line = team.nextLine('p3');
+  team.observeChat({ playerId: 'p3', day: game.day, phase: game.phase, template: line });
+  goto(game, team, Phase.VOTE);
+  const voters = ['p2', 'p4', 'p5', 'p6'].filter((id) => findPlayer(game, id).alive);
+  const targets = voters.map((id) => team.act(id).target);
+  assert.ok(targets.filter((t) => t === 'p1').length >= Math.ceil(voters.length / 2));
 });

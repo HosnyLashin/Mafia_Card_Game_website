@@ -9,9 +9,9 @@ export const LINE_CATEGORIES = [
   'agree',
   'ask',
   'defend',
-  'claimPolice',
+  'sure',
+  'vouch',
   'counter',
-  'cleared',
   'defense',
   'filler',
 ];

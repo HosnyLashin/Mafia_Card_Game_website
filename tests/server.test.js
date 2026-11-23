@@ -7,7 +7,7 @@ import path from 'node:path';
 import { io as ioClient } from 'socket.io-client';
 import { createServer } from '../server.js';
 
-const FAST = { seconds: { night: 0.6, report: 0.1, discussion: 0.8, vote: 0.6, defense: 0.4, revote: 0.3 } };
+const FAST = { seconds: { night: 0.6, report: 0.1, discussion: 0.8, vote: 0.6, defense: 0.4, revote: 0.3, result: 0.3 } };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -223,6 +223,7 @@ test('chat is gated by phase and by life, and a night kill reveals the victim ro
 
     const mafia = players.find((p) => view(p).me.role === 'mafia');
     const victim = players.find((p) => view(p).me.role === 'citizen');
+    const historyBefore = victim.log.filter((e) => e.event === 'chat:history').length;
     await ask(mafia, 'game:action', { action: { type: 'night', target: victim.playerId } });
     for (const p of players.filter((x) => x !== mafia)) {
       await ask(p, 'game:action', { action: { type: 'night', target: null } });
@@ -236,12 +237,17 @@ test('chat is gated by phase and by life, and a night kill reveals the victim ro
     assert.equal(view(mafia).players.find((p) => p.id === victim.playerId).role, 'citizen');
 
     await until(() => view(players[0]).phase === 'discussion');
-    assert.deepEqual(await ask(victim, 'chat:send', { text: 'I am dead' }), { error: 'DEAD' });
+    assert.ok(victim.log.filter((e) => e.event === 'chat:history').length > historyBefore);
 
     const speaker = players.find((p) => p !== victim);
     assert.equal((await ask(speaker, 'chat:send', { text: '  hello   everyone  ' })).ok, true);
     assert.deepEqual(await ask(speaker, 'chat:send', { text: 'again' }), { error: 'CHAT_RATE_LIMITED' });
+    assert.equal((await ask(victim, 'chat:send', { text: 'I am dead' })).ok, true);
     await until(() => victim.log.some((e) => e.event === 'chat:message' && e.payload.text === 'hello everyone'));
+    await until(() => victim.log.some((e) => e.event === 'chat:message' && e.payload.text === 'I am dead' && e.payload.channel === 'dead'));
+    await sleep(150);
+    const others = players.filter((p) => p !== victim);
+    assert.ok(others.every((p) => !p.log.some((e) => e.event === 'chat:message' && e.payload.text === 'I am dead')));
     assert.deepEqual(await ask(speaker, 'chat:send', { text: ' ' }), { error: 'EMPTY_MESSAGE' });
 
     await sleep(800);
@@ -422,7 +428,7 @@ test('answers 404 when no website has been built', async () => {
 });
 
 test('everyone alive agreeing ends the discussion early while bots wait for them', async () => {
-  const config = { seconds: { night: 1, report: 0.1, discussion: 8, vote: 1, defense: 0.4, revote: 0.3 } };
+  const config = { seconds: { night: 1, report: 0.1, discussion: 8, vote: 1, defense: 0.4, revote: 0.3, result: 0.3 } };
   await withServer({ gameConfig: config }, async ({ connect }) => {
     const { players } = await fillRoom(connect, 3);
     await ask(players[0], 'room:start', { fillWithBots: true });
@@ -450,7 +456,7 @@ test('everyone alive agreeing ends the discussion early while bots wait for them
 });
 
 test('bots talk in the chat with translatable lines', async () => {
-  const config = { seconds: { night: 1, report: 0.1, discussion: 5, vote: 1, defense: 0.4, revote: 0.3 } };
+  const config = { seconds: { night: 1, report: 0.1, discussion: 5, vote: 1, defense: 0.4, revote: 0.3, result: 0.3 } };
   await withServer({ gameConfig: config }, async ({ connect }) => {
     const { players } = await fillRoom(connect, 2);
     await ask(players[0], 'room:start', { fillWithBots: true });
@@ -486,5 +492,89 @@ test('bot chat lines are validated before they are posted', async () => {
     assert.equal(server.rooms.postBotChat(room, bot.id, { key: 'open', variant: 0, params: { html: 'x' } }, now).error, 'INVALID_LINE');
     assert.equal(server.rooms.postBotChat(room, players[0].playerId, { key: 'open', variant: 0, params: {} }, now).error, 'NOT_IN_ROOM');
     assert.ok(server.rooms.postBotChat(room, bot.id, { key: 'open', variant: 0, params: {} }, now + 5000).message);
+  });
+});
+
+test('the host chooses how many players the room has', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players, code } = await fillRoom(connect, 2);
+    const [host, guest] = players;
+    assert.equal(roomState(host).capacity, 6);
+    assert.deepEqual(await ask(guest, 'room:settings', { capacity: 8 }), { error: 'NOT_HOST' });
+    for (const bad of [5, 13, 7.5, '8', null]) {
+      assert.deepEqual(await ask(host, 'room:settings', { capacity: bad }), { error: 'INVALID_CAPACITY' });
+    }
+    assert.equal((await ask(host, 'room:settings', { capacity: 8 })).ok, true);
+    await until(() => roomState(guest).capacity === 8);
+
+    const extra = [];
+    for (let i = 0; i < 6; i++) {
+      const joiner = await connect();
+      extra.push(joiner);
+      assert.equal((await ask(joiner, 'room:join', { code, name: `Extra ${i}` })).ok, true);
+    }
+    const late = await connect();
+    assert.deepEqual(await ask(late, 'room:join', { code, name: 'Late' }), { error: 'ROOM_FULL' });
+    assert.deepEqual(await ask(host, 'room:settings', { capacity: 6 }), { error: 'INVALID_CAPACITY' });
+  });
+});
+
+test('starting with bots fills the room to the chosen size', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 2);
+    const [host] = players;
+    await ask(host, 'room:settings', { capacity: 9 });
+    assert.equal((await ask(host, 'room:start', { fillWithBots: true })).ok, true);
+    await until(() => roomState(host).players.length === 9);
+    assert.equal(roomState(host).players.filter((p) => p.isBot).length, 7);
+    assert.equal(view(host).players.length, 9);
+  });
+});
+
+test('a default room holds six players', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { code } = await fillRoom(connect, 6);
+    const late = await connect();
+    assert.deepEqual(await ask(late, 'room:join', { code, name: 'Seventh' }), { error: 'ROOM_FULL' });
+  });
+});
+
+test('leaving a running game hands the seat to a bot and the game goes on', async () => {
+  await withServer({}, async ({ connect, server }) => {
+    const { players, code } = await fillRoom(connect, 2);
+    const [host, guest] = players;
+    await ask(host, 'room:start', { fillWithBots: true });
+    await until(() => view(host) && view(guest));
+    const guestRole = view(guest).me.role;
+
+    assert.equal((await ask(guest, 'room:leave', {})).ok, true);
+    await until(() => roomState(host).players.find((p) => p.id === guest.playerId)?.isBot === true);
+    assert.equal(roomState(host).players.find((p) => p.id === guest.playerId).replaced, true);
+    assert.equal(view(host).players.find((p) => p.id === guest.playerId).isBot, true);
+    assert.equal(server.rooms.roomOf(guest.playerId), null);
+    assert.ok(guestRole);
+
+    ask(host, 'game:action', { action: { type: 'night', target: null } });
+    await until(() => view(host).phase === 'report' || view(host).phase === 'discussion', 8000);
+    assert.ok(view(host).events.length > 0);
+
+    const rejoin = await ask(guest, 'room:join', { code, name: 'Again' });
+    assert.deepEqual(rejoin, { error: 'GAME_STARTED' });
+
+    assert.equal((await ask(host, 'room:leave', {})).ok, true);
+    await until(() => server.rooms.get(code) === null);
+  });
+});
+
+test('a leaving host passes the room to the next human and bots keep the seat', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 3);
+    const [host, a, b] = players;
+    await ask(host, 'room:start', { fillWithBots: true });
+    await until(() => players.every((p) => view(p)));
+    assert.equal((await ask(host, 'room:leave', {})).ok, true);
+    await until(() => roomState(a).hostId !== host.playerId);
+    assert.ok([a.playerId, b.playerId].includes(roomState(a).hostId));
+    assert.equal(roomState(a).players.find((p) => p.id === host.playerId).isBot, true);
   });
 });

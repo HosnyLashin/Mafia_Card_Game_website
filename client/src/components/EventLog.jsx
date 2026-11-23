@@ -11,6 +11,7 @@ export function describeEvent(event, players, t) {
       return withRole(t('event.vote.kicked', { name: nameOf(params.playerId) }));
     case 'vote.accused':
     case 'defense.spared':
+    case 'player.replaced':
       return t(`event.${key}`, { name: nameOf(params.playerId) });
     case 'night.nobody_died':
     case 'police.right':

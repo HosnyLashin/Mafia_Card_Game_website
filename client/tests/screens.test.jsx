@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { goOnline, lobbyState, setup } from './helpers.jsx';
+import { ar, goOnline, lobbyState, setup } from './helpers.jsx';
 
 const enterLobby = (env, overrides) => act(() => env.fire('room:state', lobbyState(overrides)));
 
@@ -76,15 +76,15 @@ describe('home screen', () => {
   it('renders Arabic with right-to-left layout and a left-to-right code field', () => {
     setup({ lang: 'ar' });
     expect(document.documentElement.dir).toBe('rtl');
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('مافيا');
-    expect(screen.getByRole('button', { name: 'إنشاء غرفة' })).toBeInTheDocument();
-    expect(screen.getByLabelText('رمز الغرفة')).toHaveAttribute('dir', 'ltr');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(ar('app.name'));
+    expect(screen.getByRole('button', { name: ar('home.create') })).toBeInTheDocument();
+    expect(screen.getByLabelText(ar('home.join.label'))).toHaveAttribute('dir', 'ltr');
   });
 
   it('can switch language from the home screen', async () => {
     setup();
-    await userEvent.click(screen.getByRole('button', { name: 'العربية' }));
-    expect(screen.getByRole('button', { name: 'إنشاء غرفة' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'مصري' }));
+    expect(screen.getByRole('button', { name: ar('home.create') })).toBeInTheDocument();
     expect(document.documentElement.dir).toBe('rtl');
   });
 });
@@ -190,9 +190,66 @@ describe('lobby screen', () => {
     const env = setup({ lang: 'ar' });
     act(() => goOnline(env));
     await enterLobby(env);
-    expect(screen.getByRole('img', { name: 'رمز الغرفة: KQTD' })).toHaveAttribute('dir', 'ltr');
-    expect(screen.getByRole('button', { name: 'إزالة Sam' })).toBeInTheDocument();
-    expect(screen.getByText('المضيف')).toBeInTheDocument();
-    expect(screen.getByText(/يلزم 6 لاعبين على الأقل/)).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: `${ar('lobby.code.label')}: KQTD` })).toHaveAttribute('dir', 'ltr');
+    expect(screen.getByRole('button', { name: ar('lobby.kick', { name: 'Sam' }) })).toBeInTheDocument();
+    expect(screen.getByText(ar('lobby.host'))).toBeInTheDocument();
+    expect(screen.getByText(ar('lobby.need', { min: 6 }))).toBeInTheDocument();
+  });
+});
+
+describe('room size', () => {
+  it('lets the host change the number of players within the limits', async () => {
+    const env = setup();
+    act(() => goOnline(env));
+    await enterLobby(env);
+    expect(screen.getByRole('group', { name: 'Number of players' })).toHaveTextContent('6');
+    expect(screen.getByRole('button', { name: 'Fewer players' })).toBeDisabled();
+    env.replies['room:settings'] = { ok: true };
+    await userEvent.click(screen.getByRole('button', { name: 'More players' }));
+    expect(env.sent.find((s) => s.event === 'room:settings').payload).toEqual({ capacity: 7 });
+
+    act(() => env.fire('room:state', lobbyState({ capacity: 12 })));
+    expect(screen.getByRole('button', { name: 'More players' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Fewer players' })).toBeEnabled();
+    expect(screen.getByText('3 / 12')).toBeInTheDocument();
+  });
+
+  it('shows guests the size without the controls', async () => {
+    const env = setup();
+    act(() => goOnline(env));
+    await enterLobby(env, { hostId: 'g_sam', capacity: 9 });
+    expect(screen.getByRole('group', { name: 'Number of players' })).toHaveTextContent('9');
+    expect(screen.queryByRole('button', { name: 'More players' })).toBeNull();
+  });
+
+  it('fills to the chosen size when starting with bots', async () => {
+    const env = setup();
+    act(() => goOnline(env));
+    await enterLobby(env, { capacity: 9 });
+    await userEvent.click(screen.getByRole('button', { name: 'Start with bots' }));
+    expect(screen.getByText(/so the game has 9 players/)).toBeInTheDocument();
+    env.replies['room:start'] = { ok: true };
+    await userEvent.click(screen.getByRole('button', { name: 'Add bots and start' }));
+    expect(env.sent.find((s) => s.event === 'room:start').payload).toEqual({ fillWithBots: true });
+  });
+
+  it('offers a normal start plus an optional bot fill once there are enough players', async () => {
+    const env = setup();
+    act(() => goOnline(env));
+    const players = Array.from({ length: 6 }, (_, i) => ({ id: i === 0 ? 'g_me' : `g_${i}`, name: `P${i}`, isBot: false, connected: true, left: false }));
+    await enterLobby(env, { players, capacity: 8 });
+    expect(screen.getByRole('button', { name: 'Start game' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Fill empty seats with bots and start' }));
+    expect(screen.getByText(/so the game has 8 players/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start game' })).toBeNull();
+  });
+
+  it('has no bot fill when the room is full', async () => {
+    const env = setup();
+    act(() => goOnline(env));
+    const players = Array.from({ length: 6 }, (_, i) => ({ id: i === 0 ? 'g_me' : `g_${i}`, name: `P${i}`, isBot: false, connected: true, left: false }));
+    await enterLobby(env, { players, capacity: 6 });
+    expect(screen.getByRole('button', { name: 'Start game' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Fill empty seats with bots and start' })).toBeNull();
   });
 });

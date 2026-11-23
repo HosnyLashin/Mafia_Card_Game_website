@@ -3,7 +3,7 @@ import { act, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describeEvent } from '../src/components/EventLog.jsx';
 import { translate } from '../src/i18n/index.jsx';
-import { gameView, goOnline, lobbyState, person, setup, withMe } from './helpers.jsx';
+import { ar, gameView, goOnline, lobbyState, person, setup, withMe } from './helpers.jsx';
 
 async function enterGame(env, view, { hostId = 'g_me' } = {}) {
   act(() => goOnline(env));
@@ -25,7 +25,7 @@ describe('night', () => {
     });
     await enterGame(env, view);
     expect(screen.getByText('Choose who to eliminate tonight.')).toBeInTheDocument();
-    const picker = screen.getByRole('list', { name: '' });
+    const picker = document.querySelector('.picker');
     expect(within(picker).queryByRole('button', { name: /Hosny/ })).toBeNull();
     expect(within(picker).queryByRole('button', { name: /Amir/ })).toBeNull();
     env.replies['game:action'] = { ok: true };
@@ -49,12 +49,13 @@ describe('night', () => {
     expect(screen.getByText('Choose who to investigate tonight.')).toBeInTheDocument();
   });
 
-  it('gives citizens the same kind of screen, with a harmless pick', async () => {
+  it('lets citizens sleep with nothing to click', async () => {
     const env = setup();
-    await enterGame(env, withMe({ role: 'citizen' }));
+    await enterGame(env, withMe({ role: 'citizen', awaitingAction: false }));
     expect(screen.getByText(/The town sleeps/)).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /Amir|Dana|Lina|Omar|Sara/ })).toHaveLength(5);
-    expect(screen.getByRole('button', { name: 'Do nothing tonight' })).toBeInTheDocument();
+    expect(document.querySelector('.picker')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Do nothing tonight' })).toBeNull();
+    expect(actions(env)).toEqual([]);
   });
 
   it('shows the role card on the first night only', async () => {
@@ -129,7 +130,7 @@ describe('discussion chat', () => {
     const env = setup();
     await enterGame(env, gameView({ phase: 'discussion', me: { ...gameView().me, awaitingAction: false } }));
     env.replies['chat:send'] = { ok: true };
-    const box = screen.getByLabelText('Write a message');
+    const box = screen.getByLabelText('Chat: Write a message');
     await userEvent.type(box, '  I suspect Dana ');
     await userEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(env.sent.find((s) => s.event === 'chat:send').payload).toEqual({ text: 'I suspect Dana' });
@@ -140,7 +141,7 @@ describe('discussion chat', () => {
     const env = setup();
     await enterGame(env, gameView({ phase: 'discussion' }));
     env.replies['chat:send'] = { error: 'CHAT_RATE_LIMITED' };
-    const box = screen.getByLabelText('Write a message');
+    const box = screen.getByLabelText('Chat: Write a message');
     await userEvent.type(box, 'hello{Enter}');
     expect(await screen.findByRole('alert')).toHaveTextContent('too fast');
     expect(box).toHaveValue('hello');
@@ -149,7 +150,7 @@ describe('discussion chat', () => {
   it('does not send empty messages', async () => {
     const env = setup();
     await enterGame(env, gameView({ phase: 'discussion' }));
-    await userEvent.type(screen.getByLabelText('Write a message'), '   {Enter}');
+    await userEvent.type(screen.getByLabelText('Chat: Write a message'), '   {Enter}');
     expect(env.sent.some((s) => s.event === 'chat:send')).toBe(false);
   });
 
@@ -171,8 +172,9 @@ describe('discussion chat', () => {
   it('shows dead players the chat without a way to write', async () => {
     const env = setup();
     await enterGame(env, withMe({ alive: false, awaitingAction: false }, { phase: 'discussion' }));
-    expect(screen.queryByLabelText('Write a message')).toBeNull();
-    expect(screen.getByText(/You can read the chat but not write/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Chat: Write a message')).toBeNull();
+    expect(screen.getByText(/You can read this chat but not write in it/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Dead chat: Write a message')).toBeInTheDocument();
   });
 
   it('renders message text as plain text', async () => {
@@ -215,11 +217,11 @@ describe('trial', () => {
     await enterGame(env, trial('defense'));
     expect(screen.getByRole('heading', { name: 'Dana is on trial' })).toBeInTheDocument();
     expect(screen.getByLabelText('Votes: 3')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Write a message')).toBeNull();
+    expect(screen.queryByLabelText('Chat: Write a message')).toBeNull();
     expect(screen.getByText('Only the accused can speak now.')).toBeInTheDocument();
     act(() => env.fire('game:view', trial('defense', { id: 'g_b' }, { me: { ...gameView().me, id: 'g_b', role: 'citizen', alive: true, awaitingAction: false } })));
     expect(screen.getByText(/Explain why you are not the mafia/)).toBeInTheDocument();
-    expect(screen.getByLabelText('Write a message')).toBeInTheDocument();
+    expect(screen.getByLabelText('Chat: Write a message')).toBeInTheDocument();
   });
 
   it('lets voters of the accused keep or switch', async () => {
@@ -293,9 +295,9 @@ describe('Arabic game screens', () => {
   it('shows the night prompt and role chip in Arabic', async () => {
     const env = setup({ lang: 'ar' });
     await enterGame(env, withMe({ role: 'police' }));
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('الليل');
-    expect(screen.getByText('اختر من تريد التحقيق معه الليلة.')).toBeInTheDocument();
-    expect(screen.getByText('الشرطي', { selector: '.role-chip' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(ar('phase.night'));
+    expect(screen.getByText(ar('night.prompt.police'))).toBeInTheDocument();
+    expect(screen.getByText(ar('role.police'), { selector: '.role-chip' })).toBeInTheDocument();
   });
 
   it('shows the morning report in Arabic', async () => {
@@ -304,9 +306,10 @@ describe('Arabic game screens', () => {
       { seq: 0, day: 1, key: 'night.died', params: { playerId: 'g_b', role: 'doctor' } },
       { seq: 1, day: 1, key: 'police.wrong', params: {} },
     ] }));
-    const report = screen.getByLabelText('تقرير الصباح', { selector: 'section' });
-    expect(report).toHaveTextContent('تم قتل Dana في الليل. الدور: الطبيب');
-    expect(report).toHaveTextContent('اشتبه الشرطي بالشخص الخطأ.');
+    const report = screen.getByLabelText(ar('phase.report'), { selector: 'section' });
+    expect(report).toHaveTextContent(ar('event.night.died', { name: 'Dana' }));
+    expect(report).toHaveTextContent(ar('event.role', { role: ar('role.doctor') }));
+    expect(report).toHaveTextContent(ar('event.police.wrong'));
   });
 });
 
@@ -389,8 +392,8 @@ describe('skipping the discussion', () => {
   it('shows the skip controls in Arabic', async () => {
     const env = setup({ lang: 'ar' });
     await enterGame(env, discussing({ needed: 4, agreed: 1, mine: false }));
-    expect(screen.getByRole('button', { name: 'تخطَّ النقاش' })).toBeInTheDocument();
-    expect(screen.getByText('وافق 1 من 4 على التخطي')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: ar('discussion.skip') })).toBeInTheDocument();
+    expect(screen.getByText(ar('discussion.skipCount', { agreed: 1, needed: 4 }))).toBeInTheDocument();
   });
 });
 
@@ -424,7 +427,117 @@ describe('bot chat messages', () => {
     await enterGame(env, gameView({ phase: 'discussion' }));
     act(() => env.fire('chat:message', botMessage(1, 'filler', 1)));
     act(() => env.fire('chat:message', botMessage(2, 'suspect', 1, 'unknown-id')));
-    expect(screen.getByText('لنقارن ما قاله كل واحد.')).toBeInTheDocument();
-    expect(screen.getByText('هناك شيء في ? يزعجني.')).toBeInTheDocument();
+    expect(screen.getByText(ar('bot.say.filler.1'))).toBeInTheDocument();
+    expect(screen.getByText(ar('bot.say.suspect.1', { target: '?' }))).toBeInTheDocument();
+  });
+});
+
+describe('vote result', () => {
+  const resulting = (voteResult, rest = {}) =>
+    withMe({ awaitingAction: false }, { phase: 'result', voteResult, voteCounts: voteResult.counts, ...rest });
+
+  it('shows the tally and who goes on trial', async () => {
+    const env = setup();
+    await enterGame(env, resulting({ counts: { g_b: 3, g_a: 1 }, accusedId: 'g_b', tie: false }, { accused: 'g_b' }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Vote result');
+    expect(screen.getByRole('status')).toHaveTextContent('Dana got the most votes and goes on trial.');
+    expect(screen.getByLabelText('Votes: 3')).toBeInTheDocument();
+    expect(screen.getByLabelText('Votes: 1')).toBeInTheDocument();
+    expect(document.querySelector('.tie')).toBeNull();
+  });
+
+  it('announces a tie and that the vote is skipped', async () => {
+    const env = setup();
+    await enterGame(env, resulting({ counts: { g_b: 2, g_a: 2 }, accusedId: null, tie: true }));
+    expect(screen.getByRole('status')).toHaveTextContent('It is a tie! Nobody goes on trial, so the vote is skipped.');
+    expect(document.querySelector('.tie')).not.toBeNull();
+    expect(screen.getAllByLabelText('Votes: 2')).toHaveLength(2);
+  });
+
+  it('says so when nobody voted', async () => {
+    const env = setup();
+    await enterGame(env, resulting({ counts: {}, accusedId: null, tie: true }));
+    expect(screen.getByRole('status')).toHaveTextContent('Nobody voted. The vote is skipped.');
+  });
+
+  it('shows the result in Egyptian Arabic', async () => {
+    const env = setup({ lang: 'ar' });
+    await enterGame(env, resulting({ counts: { g_b: 2, g_a: 2 }, accusedId: null, tie: true }));
+    expect(screen.getByRole('status')).toHaveTextContent(ar('result.tie'));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(ar('phase.result'));
+  });
+});
+
+describe('dead chat', () => {
+  const deadView = (rest = {}) => withMe({ alive: false, awaitingAction: false }, rest);
+
+  it('gives dead players their own chat on every screen and sends from it', async () => {
+    const env = setup();
+    await enterGame(env, deadView({ phase: 'night' }));
+    expect(screen.getByText('Only dead players can see this chat.')).toBeInTheDocument();
+    env.replies['chat:send'] = { ok: true };
+    await userEvent.type(screen.getByLabelText('Dead chat: Write a message'), 'we saw it{Enter}');
+    expect(env.sent.find((s) => s.event === 'chat:send').payload).toEqual({ text: 'we saw it' });
+    act(() => env.fire('game:view', deadView({ phase: 'vote' })));
+    expect(screen.getByLabelText('Dead chat: Write a message')).toBeInTheDocument();
+  });
+
+  it('keeps the dead chat separate from the main chat', async () => {
+    const env = setup();
+    await enterGame(env, deadView({ phase: 'discussion' }));
+    act(() => env.fire('chat:history', [
+      { id: 1, playerId: 'g_a', name: 'Amir', text: 'main talk', channel: 'main', day: 1, phase: 'discussion', at: 1 },
+      { id: 2, playerId: 'g_c', name: 'Lina', text: 'ghost talk', channel: 'dead', day: 1, phase: 'night', at: 2 },
+    ]));
+    const main = screen.getByRole('region', { name: 'Chat' });
+    const dead = screen.getByRole('region', { name: 'Dead chat' });
+    expect(within(main).getByText('main talk')).toBeInTheDocument();
+    expect(within(main).queryByText('ghost talk')).toBeNull();
+    expect(within(dead).getByText('ghost talk')).toBeInTheDocument();
+    expect(within(dead).queryByText('main talk')).toBeNull();
+  });
+
+  it('never shows the dead chat to the living', async () => {
+    const env = setup();
+    await enterGame(env, gameView({ phase: 'discussion' }));
+    expect(screen.queryByRole('region', { name: 'Dead chat' })).toBeNull();
+  });
+
+  it('shows the dead chat in Arabic', async () => {
+    const env = setup({ lang: 'ar' });
+    await enterGame(env, deadView({ phase: 'night' }));
+    expect(screen.getByText(ar('chat.deadHint'))).toBeInTheDocument();
+  });
+});
+
+describe('leaving a running game', () => {
+  it('asks first, then leaves so a bot can take over', async () => {
+    const env = setup();
+    await enterGame(env, gameView());
+    await userEvent.click(screen.getByRole('button', { name: 'Leave game' }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('A bot takes your seat');
+    await userEvent.click(screen.getByRole('button', { name: 'Stay' }));
+    expect(env.sent.some((s) => s.event === 'room:leave')).toBe(false);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Leave game' }));
+    env.replies['room:leave'] = { ok: true };
+    await userEvent.click(screen.getByRole('button', { name: 'Leave and let a bot play' }));
+    expect(env.sent.some((s) => s.event === 'room:leave')).toBe(true);
+    expect(await screen.findByRole('button', { name: 'Create room' })).toBeInTheDocument();
+  });
+
+  it('is not offered once the game is over', async () => {
+    const env = setup();
+    await enterGame(env, gameView({ phase: 'ended', winner: 'citizens', deadline: null, me: { ...gameView().me, awaitingAction: false } }));
+    expect(screen.queryByRole('button', { name: 'Leave game' })).toBeNull();
+  });
+});
+
+describe('replaced players', () => {
+  it('tells everyone a bot took over a seat', async () => {
+    const env = setup();
+    const events = [{ seq: 0, day: 1, key: 'player.replaced', params: { playerId: 'g_b' } }];
+    await enterGame(env, gameView({ phase: 'discussion', events }));
+    expect(screen.getByLabelText('What happened')).toHaveTextContent('Dana left. A bot is playing their seat now.');
   });
 });

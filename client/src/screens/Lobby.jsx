@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useI18n } from '../i18n/index.jsx';
 import { useConnection } from '../net/ConnectionProvider.jsx';
 import ErrorText from '../components/ErrorText.jsx';
+import HowToButton from '../components/HowToButton.jsx';
 import LanguageSwitcher from '../components/LanguageSwitcher.jsx';
 
 export default function Lobby() {
@@ -15,7 +16,10 @@ export default function Lobby() {
 
   const isHost = room.hostId === playerId;
   const count = room.players.length;
+  const capacity = room.capacity ?? room.minPlayers;
   const enough = count >= room.minPlayers;
+  const hasEmptySeats = count < capacity;
+  const smallest = Math.max(room.minPlayers, count);
 
   async function act(event, payload) {
     setBusy(true);
@@ -61,10 +65,40 @@ export default function Lobby() {
         {copied && <p role="status">{t('lobby.copied')}</p>}
       </section>
 
+      <section className="stepper" role="group" aria-label={t('lobby.capacity')}>
+        <span className="stepper-label">{t('lobby.capacity')}</span>
+        <div className="stepper-controls">
+          {isHost && (
+            <button
+              type="button"
+              className="step"
+              aria-label={t('lobby.capacity.less')}
+              disabled={busy || capacity <= smallest}
+              onClick={() => act('room:settings', { capacity: capacity - 1 })}
+            >
+              −
+            </button>
+          )}
+          <output dir="ltr">{capacity}</output>
+          {isHost && (
+            <button
+              type="button"
+              className="step"
+              aria-label={t('lobby.capacity.more')}
+              disabled={busy || capacity >= room.maxPlayers}
+              onClick={() => act('room:settings', { capacity: capacity + 1 })}
+            >
+              +
+            </button>
+          )}
+        </div>
+        {isHost && <p className="hint">{t('lobby.capacityHint')}</p>}
+      </section>
+
       <section>
         <div className="list-head">
           <h2>{t('lobby.players')}</h2>
-          <span dir="ltr">{t('lobby.count', { count, min: room.minPlayers })}</span>
+          <span dir="ltr">{t('lobby.count', { count, capacity })}</span>
         </div>
         <ul className="players">
           {room.players.map((player) => (
@@ -90,10 +124,17 @@ export default function Lobby() {
         </ul>
       </section>
 
-      {isHost && enough && (
-        <button type="button" className="button primary" disabled={busy} onClick={() => act('room:start', {})}>
-          {t('lobby.start')}
-        </button>
+      {isHost && enough && !confirming && (
+        <>
+          <button type="button" className="button primary" disabled={busy} onClick={() => act('room:start', {})}>
+            {t('lobby.start')}
+          </button>
+          {hasEmptySeats && (
+            <button type="button" className="button secondary" onClick={() => setConfirming(true)}>
+              {t('lobby.fillBots')}
+            </button>
+          )}
+        </>
       )}
 
       {isHost && !enough && !confirming && (
@@ -105,9 +146,9 @@ export default function Lobby() {
         </>
       )}
 
-      {isHost && !enough && confirming && (
+      {isHost && confirming && (
         <div className="confirm">
-          <p>{t('lobby.botsHint', { min: room.minPlayers })}</p>
+          <p>{t('lobby.botsHint', { size: Math.max(room.minPlayers, capacity) })}</p>
           <button
             type="button"
             className="button primary"
@@ -126,6 +167,7 @@ export default function Lobby() {
 
       <ErrorText code={error} />
 
+      <HowToButton />
       <button type="button" className="button quiet" disabled={busy} onClick={() => act('room:leave', {})}>
         {t('lobby.leave')}
       </button>

@@ -2,6 +2,7 @@ import { render } from '@testing-library/react';
 import { I18nProvider } from '../src/i18n/index.jsx';
 import App from '../src/App.jsx';
 import { createConnection } from '../src/net/connection.js';
+import { translate } from '../src/i18n/index.jsx';
 
 export function createFakeIo() {
   const handlers = new Map();
@@ -58,6 +59,7 @@ export const lobbyState = (overrides = {}) => ({
   phase: 'lobby',
   minPlayers: 6,
   maxPlayers: 12,
+  capacity: 6,
   players: [
     { id: 'g_me', name: 'Hosny', isBot: false, connected: true, left: false },
     { id: 'g_sam', name: 'Sam', isBot: false, connected: true, left: false },
@@ -94,3 +96,5 @@ export const gameView = (overrides = {}) => ({
 
 export const withMe = (patch, rest = {}) => gameView({ me: { ...gameView().me, ...patch }, ...rest });
 export { person };
+
+export const ar = (key, params) => translate('ar', key, params);

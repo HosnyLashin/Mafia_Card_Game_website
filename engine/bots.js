@@ -24,21 +24,19 @@ export function createBotTeam(game, rng) {
   const plans = new Map();
   const defended = new Set();
 
-  game.players
-    .filter((p) => p.isBot)
-    .forEach((p) =>
-      memories.set(p.id, {
-        known: new Set(),
-        cleared: new Set(),
-        said: new Set(),
-        reportDay: 0,
-        lastSuspect: null,
-        lastResult: 'none',
-        accusedPending: 0,
-      }),
-    );
+  const freshMemory = () => ({
+    known: new Set(),
+    cleared: new Set(),
+    said: new Set(),
+    reportDay: 0,
+    lastSuspect: null,
+    lastResult: 'none',
+    accusedPending: 0,
+  });
 
-  const hasBots = memories.size > 0;
+  game.players.filter((p) => p.isBot).forEach((p) => memories.set(p.id, freshMemory()));
+
+  let hasBots = memories.size > 0;
   const aliveOthers = (id) => alivePlayers(game).filter((p) => p.id !== id);
   const spokeOn = (day, id) => spoken.get(`${day}:${id}`) ?? 0;
 
@@ -158,7 +156,6 @@ export function createBotTeam(game, rng) {
     const candidates = aliveOthers(bot.id).filter((p) => !(bot.role === Role.MAFIA && p.role === Role.MAFIA));
     if (candidates.length === 0) return null;
     if (bot.role === Role.MAFIA) return mafiaPlan('vote');
-    if (rng() < 0.03) return null;
     return topSuspect(bot.id, candidates).player.id;
   }
 
@@ -199,10 +196,7 @@ export function createBotTeam(game, rng) {
     if (message.template) {
       const { key, params } = message.template;
       if (ACCUSING_LINES.has(key) && params.target) addMention(message.playerId, params.target, 1);
-      if (key === 'claimPolice' && params.target) {
-        claims.add(message.playerId);
-        addMention(message.playerId, params.target, 2);
-      }
+      if (key === 'sure' && params.target) addMention(message.playerId, params.target, 2);
       return;
     }
 
@@ -240,9 +234,9 @@ export function createBotTeam(game, rng) {
       return line('defend');
     }
     const knownMafia = [...memo.known].find((id) => findPlayer(game, id)?.alive);
-    if (bot.role === Role.POLICE && knownMafia && once('claim')) return line('claimPolice', { target: knownMafia });
-    if (bot.role === Role.POLICE && memo.lastResult === 'wrong' && memo.lastSuspect && rng() < 0.5 && once('cleared')) {
-      return line('cleared', { target: memo.lastSuspect });
+    if (bot.role === Role.POLICE && knownMafia && once('sure')) return line('sure', { target: knownMafia });
+    if (bot.role === Role.POLICE && memo.lastResult === 'wrong' && memo.lastSuspect && rng() < 0.5 && once('vouch')) {
+      return line('vouch', { target: memo.lastSuspect });
     }
     if (bot.role === Role.MAFIA) {
       const claimant = [...claims].find((id) => id !== botId && findPlayer(game, id)?.alive);
@@ -272,8 +266,14 @@ export function createBotTeam(game, rng) {
     return once('filler') ? line('filler') : null;
   }
 
+  function adopt(botId) {
+    if (!memories.has(botId)) memories.set(botId, freshMemory());
+    hasBots = true;
+  }
+
   return {
     sync,
+    adopt,
     act,
     observeChat,
     nextLine,

@@ -55,7 +55,9 @@ export class Rooms {
       code: this.generateCode(),
       hostId: playerId,
       phase: 'lobby',
+      capacity: this.minPlayers,
       players: [member(playerId, clean)],
+      deadSeen: new Set(),
       game: null,
       session: null,
       chat: [],
@@ -72,7 +74,7 @@ export class Rooms {
     const room = this.get(code);
     if (!room) return { error: 'ROOM_NOT_FOUND' };
     if (room.phase !== 'lobby') return { error: 'GAME_STARTED' };
-    if (room.players.length >= this.maxPlayers) return { error: 'ROOM_FULL' };
+    if (room.players.length >= room.capacity) return { error: 'ROOM_FULL' };
     const clean = cleanName(name);
     if (!clean) return { error: 'INVALID_NAME' };
     if (room.players.some((p) => p.name.toLowerCase() === clean.toLowerCase())) {
@@ -99,6 +101,19 @@ export class Rooms {
     return true;
   }
 
+  setCapacity(playerId, capacity) {
+    const room = this.roomOf(playerId);
+    if (!room) return { error: 'NOT_IN_ROOM' };
+    if (room.hostId !== playerId) return { error: 'NOT_HOST' };
+    if (room.phase !== 'lobby') return { error: 'GAME_STARTED' };
+    if (!Number.isInteger(capacity) || capacity < this.minPlayers || capacity > this.maxPlayers) {
+      return { error: 'INVALID_CAPACITY' };
+    }
+    if (capacity < room.players.length) return { error: 'INVALID_CAPACITY' };
+    room.capacity = capacity;
+    return { room };
+  }
+
   removePlayer(playerId) {
     const room = this.roomOf(playerId);
     if (!room) return null;
@@ -106,6 +121,11 @@ export class Rooms {
     this.membership.delete(playerId);
     if (room.phase === 'lobby') {
       room.players = room.players.filter((p) => p.id !== playerId);
+    } else if (room.phase === 'playing' && room.session) {
+      player.isBot = true;
+      player.connected = false;
+      player.replaced = true;
+      room.session.replaceWithBot(playerId);
     } else {
       player.left = true;
       player.connected = false;
@@ -136,11 +156,12 @@ export class Rooms {
     if (room.hostId !== playerId) return { error: 'NOT_HOST' };
     if (room.phase !== 'lobby') return { error: 'ALREADY_STARTED' };
     const missing = this.minPlayers - room.players.length;
-    if (missing > 0) {
-      if (!fillWithBots) return { error: 'NOT_ENOUGH_PLAYERS', missing };
+    if (missing > 0 && !fillWithBots) return { error: 'NOT_ENOUGH_PLAYERS', missing };
+    const toAdd = fillWithBots ? Math.max(this.minPlayers, room.capacity) - room.players.length : 0;
+    if (toAdd > 0) {
       const taken = new Set(room.players.map((p) => p.name.toLowerCase()));
       let number = 1;
-      for (let added = 0; added < missing; ) {
+      for (let added = 0; added < toAdd; ) {
         const name = `Bot ${number}`;
         number += 1;
         if (taken.has(name.toLowerCase())) continue;
@@ -162,18 +183,29 @@ export class Rooms {
     room.players = room.players.filter((p) => !p.isBot && !p.left);
     room.phase = 'lobby';
     room.chat = [];
+    room.deadSeen = new Set();
     return { room };
+  }
+
+  isDead(room, playerId) {
+    if (room.phase !== 'playing' || !room.game) return false;
+    const gamePlayer = room.game.players.find((p) => p.id === playerId);
+    return Boolean(gamePlayer) && !gamePlayer.alive;
   }
 
   chatBlock(room, playerId) {
     const player = room.players.find((p) => p.id === playerId);
     if (!player || player.left) return 'NOT_IN_ROOM';
     if (room.phase !== 'playing') return null;
-    const gamePlayer = room.game.players.find((p) => p.id === playerId);
-    if (!gamePlayer.alive) return 'DEAD';
+    if (this.isDead(room, playerId)) return null;
     if (room.game.phase === 'discussion') return null;
     if (room.game.phase === 'defense' && room.game.accused === playerId) return null;
     return 'CHAT_CLOSED';
+  }
+
+  visibleChat(room, playerId) {
+    const seesDead = room.phase === 'ended' || this.isDead(room, playerId);
+    return room.chat.filter((message) => message.channel !== 'dead' || seesDead);
   }
 
   postChat(room, playerId, rawText, now) {
@@ -191,6 +223,7 @@ export class Rooms {
       playerId,
       name: player.name,
       text,
+      channel: this.isDead(room, playerId) ? 'dead' : 'main',
       at: now,
       day: room.game ? room.game.day : 0,
       phase: room.game ? room.game.phase : room.phase,
@@ -205,6 +238,7 @@ export class Rooms {
     if (!bot) return { error: 'NOT_IN_ROOM' };
     const blocked = this.chatBlock(room, botId);
     if (blocked) return { error: blocked };
+    if (this.isDead(room, botId)) return { error: 'DEAD' };
     if (!validLine(line)) return { error: 'INVALID_LINE' };
     const last = room.lastChat.get(botId) ?? 0;
     if (now - last < CHAT_INTERVAL_MS) return { error: 'CHAT_RATE_LIMITED' };
@@ -215,6 +249,7 @@ export class Rooms {
       playerId: botId,
       name: bot.name,
       text: null,
+      channel: 'main',
       template: { key: line.key, variant: line.variant, params: { ...line.params } },
       at: now,
       day: room.game.day,
@@ -232,7 +267,15 @@ export class Rooms {
       phase: room.phase,
       minPlayers: this.minPlayers,
       maxPlayers: this.maxPlayers,
-      players: room.players.map(({ id, name, isBot, connected, left }) => ({ id, name, isBot, connected, left })),
+      capacity: room.capacity,
+      players: room.players.map(({ id, name, isBot, connected, left, replaced }) => ({
+        id,
+        name,
+        isBot,
+        connected,
+        left,
+        replaced: Boolean(replaced),
+      })),
     };
   }
 

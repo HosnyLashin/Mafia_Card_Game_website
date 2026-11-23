@@ -8,6 +8,7 @@ export const Phase = Object.freeze({
   VOTE: 'vote',
   DEFENSE: 'defense',
   REVOTE: 'revote',
+  RESULT: 'result',
   ENDED: 'ended',
 });
 
@@ -38,6 +39,9 @@ function emit(game, key, params = {}) {
 function schedule(game, phase, now) {
   game.phase = phase;
   game.deadline = now + game.config.seconds[phase] * 1000;
+  if (phase === Phase.NIGHT) {
+    game.nightEarliest = now + Math.min(game.config.nightMinSeconds, game.config.seconds.night) * 1000;
+  }
 }
 
 function buildRoles(count, config) {
@@ -66,6 +70,7 @@ export function createGame({ players, config, rng = Math.random, now = 0 }) {
     phase: Phase.NIGHT,
     day: 1,
     deadline: null,
+    nightEarliest: 0,
     players: players.map((p, index) => ({
       id: p.id,
       name: p.name,
@@ -164,7 +169,9 @@ export function skipStatus(game, playerId) {
 function isComplete(game) {
   switch (game.phase) {
     case Phase.NIGHT:
-      return alivePlayers(game).every((p) => has(game.nightActions, p.id));
+      return alivePlayers(game)
+        .filter((p) => p.role !== Role.CITIZEN)
+        .every((p) => has(game.nightActions, p.id));
     case Phase.DISCUSSION:
       return skipAgreed(game);
     case Phase.VOTE:
@@ -181,7 +188,7 @@ export function awaitingAction(game, playerId) {
   if (!player || !player.alive) return false;
   switch (game.phase) {
     case Phase.NIGHT:
-      return !has(game.nightActions, playerId);
+      return player.role !== Role.CITIZEN && !has(game.nightActions, playerId);
     case Phase.VOTE:
       return !has(game.votes, playerId);
     case Phase.REVOTE:
@@ -201,7 +208,13 @@ export function submit(game, playerId, action, now) {
   if (!handler) return fail('WRONG_PHASE');
   const result = handler(game, player, action);
   if (result.error) return result;
-  if (isComplete(game)) advance(game, now);
+  if (isComplete(game)) {
+    if (game.phase === Phase.NIGHT && now < game.nightEarliest) {
+      game.deadline = Math.min(game.deadline, game.nightEarliest);
+    } else {
+      advance(game, now);
+    }
+  }
   return ok();
 }
 
@@ -260,7 +273,10 @@ function nextNight(game, now) {
 
 function resolveNight(game, now) {
   const players = alivePlayers(game);
-  trackMissed(players, (p) => has(game.nightActions, p.id));
+  trackMissed(
+    players.filter((p) => p.role !== Role.CITIZEN),
+    (p) => has(game.nightActions, p.id),
+  );
 
   const mafia = players.filter((p) => p.role === Role.MAFIA);
   const doctor = players.find((p) => p.role === Role.DOCTOR);
@@ -308,12 +324,25 @@ function resolveVote(game, now) {
   trackMissed(voters, (p) => has(game.votes, p.id));
 
   const counts = tally(Object.values(game.votes).filter((target) => target !== null));
-  game.voteResult = { counts: Object.fromEntries(counts), accusedId: null };
-
   const top = leaders(counts);
-  if (top.length !== 1) {
-    game.consecutiveTies += 1;
+  const tie = top.length !== 1;
+  game.voteResult = { counts: Object.fromEntries(counts), accusedId: tie ? null : top[0], tie };
+
+  if (tie) {
     emit(game, 'vote.tied');
+  } else {
+    game.accused = top[0];
+    game.accusedVoters = Object.entries(game.votes)
+      .filter(([, target]) => target === top[0])
+      .map(([id]) => id);
+    emit(game, 'vote.accused', { playerId: top[0] });
+  }
+  schedule(game, Phase.RESULT, now);
+}
+
+function finishResult(game, now) {
+  if (game.voteResult.tie) {
+    game.consecutiveTies += 1;
     if (game.consecutiveTies >= game.config.maxConsecutiveTies) {
       endGame(game, 'mafia', 'stalemate');
       return;
@@ -322,14 +351,7 @@ function resolveVote(game, now) {
     return;
   }
 
-  const accusedId = top[0];
-  game.accused = accusedId;
-  game.voteResult.accusedId = accusedId;
-  game.accusedVoters = Object.entries(game.votes)
-    .filter(([, target]) => target === accusedId)
-    .map(([id]) => id);
-  emit(game, 'vote.accused', { playerId: accusedId });
-
+  const accusedId = game.accused;
   const used = game.defenseUsed.filter((id) => id === accusedId).length;
   if (used >= game.config.defensePerPlayer) {
     kick(game, accusedId, now);
@@ -372,6 +394,9 @@ export function advance(game, now) {
     case Phase.VOTE:
       resolveVote(game, now);
       break;
+    case Phase.RESULT:
+      finishResult(game, now);
+      break;
     case Phase.DEFENSE:
       game.revotes = {};
       schedule(game, Phase.REVOTE, now);
@@ -388,4 +413,12 @@ export function tick(game, now) {
   while (game.phase !== Phase.ENDED && game.deadline !== null && now >= game.deadline) {
     advance(game, now);
   }
+}
+
+export function replaceWithBot(game, playerId) {
+  const player = findPlayer(game, playerId);
+  if (!player || player.isBot) return false;
+  player.isBot = true;
+  emit(game, 'player.replaced', { playerId });
+  return true;
 }

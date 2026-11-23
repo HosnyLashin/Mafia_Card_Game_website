@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useI18n } from '../../i18n/index.jsx';
 import { useConnection } from '../../net/ConnectionProvider.jsx';
 import ErrorText from '../../components/ErrorText.jsx';
+import GameLayout from '../../components/GameLayout.jsx';
 
 export default function EndScreen({ view }) {
   const { t } = useI18n();
@@ -17,7 +18,7 @@ export default function EndScreen({ view }) {
   }
 
   return (
-    <>
+    <GameLayout>
       <section className="end-card">
         <h2>{t(`end.${view.winner}`)}</h2>
         {over?.params.reason && <p>{t(`end.reason.${over.params.reason}`)}</p>}
@@ -45,6 +46,6 @@ export default function EndScreen({ view }) {
         <p className="hint">{t('end.waitHost')}</p>
       )}
       <ErrorText code={error} />
-    </>
+    </GameLayout>
   );
 }

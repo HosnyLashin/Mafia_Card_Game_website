@@ -1,8 +1,9 @@
 import { useI18n } from '../../i18n/index.jsx';
 import { describeEvent } from '../../components/EventLog.jsx';
+import GameLayout from '../../components/GameLayout.jsx';
 import PlayersStrip from '../../components/PlayersStrip.jsx';
 
-export default function ReportScreen({ view }) {
+export default function ReportScreen({ view, extraSide }) {
   const { t } = useI18n();
   const lines = view.events
     .filter((event) => event.day === view.day && (event.key.startsWith('night.') || event.key.startsWith('police.')))
@@ -10,7 +11,14 @@ export default function ReportScreen({ view }) {
     .filter((line) => line.text);
 
   return (
-    <>
+    <GameLayout
+      side={
+        <>
+          <PlayersStrip players={view.players} />
+          {extraSide}
+        </>
+      }
+    >
       <section className="report-card" aria-label={t('phase.report')}>
         <ul>
           {lines.map(({ event, text }) => (
@@ -18,7 +26,6 @@ export default function ReportScreen({ view }) {
           ))}
         </ul>
       </section>
-      <PlayersStrip players={view.players} />
-    </>
+    </GameLayout>
   );
 }

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useI18n } from '../../i18n/index.jsx';
 import Chat from '../../components/Chat.jsx';
+import GameLayout from '../../components/GameLayout.jsx';
 
-export default function TrialScreen({ view, act, busy }) {
+export default function TrialScreen({ view, act, busy, extraSide }) {
   const { t } = useI18n();
   const [choice, setChoice] = useState(null);
   const accused = view.players.find((player) => player.id === view.accused);
@@ -21,7 +22,14 @@ export default function TrialScreen({ view, act, busy }) {
   }
 
   return (
-    <>
+    <GameLayout
+      side={
+        <>
+          <Chat canSend={view.phase === 'defense' && iAmAccused && view.me.alive} closedKey={closedKey} />
+          {extraSide}
+        </>
+      }
+    >
       <section className="report-card">
         <h2>{t('trial.title', { name })}</h2>
         {tally.length > 0 && (
@@ -71,8 +79,6 @@ export default function TrialScreen({ view, act, busy }) {
       )}
 
       {view.phase === 'revote' && !view.canRevote && <p className="prompt">{t('revote.wait', { name })}</p>}
-
-      <Chat canSend={view.phase === 'defense' && iAmAccused && view.me.alive} closedKey={closedKey} />
-    </>
+    </GameLayout>
   );
 }

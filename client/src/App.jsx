@@ -4,6 +4,8 @@ import { createConnection, defaultServerUrl } from './net/connection.js';
 import { safeStorage } from './storage.js';
 import StatusBanner from './components/StatusBanner.jsx';
 import NoticeDialog from './components/NoticeDialog.jsx';
+import { TutorialProvider } from './tutorial/TutorialContext.jsx';
+import Tutorial from './tutorial/Tutorial.jsx';
 import Home from './screens/Home.jsx';
 import Lobby from './screens/Lobby.jsx';
 import Game from './screens/Game.jsx';
@@ -27,11 +29,14 @@ export default function App({ connection }) {
 
   return (
     <ConnectionProvider connection={active}>
-      <div className="app">
-        <StatusBanner />
-        <NoticeDialog />
-        <Screen />
-      </div>
+      <TutorialProvider>
+        <div className="app">
+          <StatusBanner />
+          <NoticeDialog />
+          <Screen />
+          <Tutorial />
+        </div>
+      </TutorialProvider>
     </ConnectionProvider>
   );
 }

@@ -1,24 +1,30 @@
 import { useI18n } from '../../i18n/index.jsx';
+import GameLayout from '../../components/GameLayout.jsx';
 import PlayerPicker from '../../components/PlayerPicker.jsx';
 import PlayersStrip from '../../components/PlayersStrip.jsx';
 
-export default function VoteScreen({ view, act, busy }) {
+export default function VoteScreen({ view, act, busy, extraSide }) {
   const { t } = useI18n();
   const { me } = view;
+  const side = (
+    <>
+      <PlayersStrip players={view.players} />
+      {extraSide}
+    </>
+  );
 
   if (!me.alive) {
     return (
-      <>
+      <GameLayout side={side}>
         <p className="hint">{t('vote.spectator')}</p>
-        <PlayersStrip players={view.players} />
-      </>
+      </GameLayout>
     );
   }
 
   const submitted = !me.awaitingAction;
   const candidates = view.players.filter((player) => player.alive && player.id !== me.id);
   return (
-    <>
+    <GameLayout side={side}>
       <p className="prompt">{t('vote.prompt')}</p>
       <PlayerPicker
         players={candidates}
@@ -39,6 +45,6 @@ export default function VoteScreen({ view, act, busy }) {
           {me.voteChoice ? t('vote.locked') : t('vote.skipped')}
         </p>
       )}
-    </>
+    </GameLayout>
   );
 }

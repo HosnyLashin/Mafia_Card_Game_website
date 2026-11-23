@@ -32,6 +32,12 @@ describe('translation files', () => {
     codes.forEach((code) => expect(base[`errors.${code}`], code).toBeTruthy());
   });
 
+  it('uses Egyptian wording in the Arabic text', () => {
+    const ar = languages.ar.messages;
+    expect(ar['home.create']).toContain('أوضة');
+    expect(ar['night.sleep']).toContain('نايمة');
+  });
+
   it('declares a direction for every language', () => {
     Object.values(languages).forEach((language) => expect(['ltr', 'rtl']).toContain(language.dir));
     expect(languages.ar.dir).toBe('rtl');
@@ -40,8 +46,9 @@ describe('translation files', () => {
 
 describe('translate', () => {
   it('fills placeholders', () => {
-    expect(translate('en', 'lobby.count', { count: 3, min: 6 })).toBe('3 / 6');
-    expect(translate('ar', 'game.day', { day: 2 })).toBe('اليوم 2');
+    expect(translate('en', 'lobby.count', { count: 3, capacity: 6 })).toBe('3 / 6');
+    expect(translate('ar', 'game.day', { day: 2 })).toContain('2');
+    expect(translate('ar', 'game.day', { day: 2 })).not.toContain('{');
   });
 
   it('falls back to English and then to the key', () => {
@@ -70,8 +77,8 @@ describe('language provider', () => {
       </I18nProvider>,
     );
     expect(document.documentElement.dir).toBe('ltr');
-    await userEvent.click(screen.getByRole('button', { name: 'العربية' }));
-    expect(screen.getByText('إنشاء غرفة')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'مصري' }));
+    expect(screen.getByText(translate('ar', 'home.create'))).toBeInTheDocument();
     expect(document.documentElement.dir).toBe('rtl');
     expect(document.documentElement.lang).toBe('ar');
     expect(memory.get('mafia.lang')).toBe('ar');
@@ -86,7 +93,7 @@ describe('language provider', () => {
         <Probe />
       </I18nProvider>,
     );
-    expect(screen.getByText('إنشاء غرفة')).toBeInTheDocument();
+    expect(screen.getByText(translate('ar', 'home.create'))).toBeInTheDocument();
   });
 });
 
@@ -104,7 +111,7 @@ describe('bot chat lines', () => {
 
   it('uses {target} only for lines that name a player', async () => {
     const { LINE_CATEGORIES, LINE_VARIANTS } = await import('../../engine/botlines.js');
-    const named = new Set(['mourn', 'suspect', 'quiet', 'agree', 'ask', 'claimPolice', 'counter', 'cleared']);
+    const named = new Set(['mourn', 'suspect', 'quiet', 'agree', 'ask', 'sure', 'vouch', 'counter']);
     for (const category of LINE_CATEGORIES) {
       for (let variant = 0; variant < LINE_VARIANTS; variant++) {
         const text = languages.en.messages[`bot.say.${category}.${variant}`];

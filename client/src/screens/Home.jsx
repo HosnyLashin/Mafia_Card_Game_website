@@ -3,6 +3,7 @@ import { useI18n } from '../i18n/index.jsx';
 import { useConnection } from '../net/ConnectionProvider.jsx';
 import { safeStorage } from '../storage.js';
 import ErrorText from '../components/ErrorText.jsx';
+import HowToButton from '../components/HowToButton.jsx';
 import LanguageSwitcher from '../components/LanguageSwitcher.jsx';
 
 const NAME_KEY = 'mafia.name';
@@ -103,6 +104,7 @@ export default function Home() {
       </section>
 
       <ErrorText code={error} />
+      <HowToButton />
     </main>
   );
 }

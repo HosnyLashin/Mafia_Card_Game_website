@@ -121,15 +121,36 @@ export function createServer({
       .forEach((p) => io.to(`p:${p.id}`).emit('game:view', viewOf(room, p.id)));
   };
 
+  const emitDeadHistory = (room) => {
+    if (!room.game) return;
+    room.players
+      .filter((p) => !p.isBot && !p.left && rooms.isDead(room, p.id) && !room.deadSeen.has(p.id))
+      .forEach((p) => {
+        room.deadSeen.add(p.id);
+        io.to(`p:${p.id}`).emit('chat:history', rooms.visibleChat(room, p.id));
+      });
+  };
+
   const notify = (room) => {
     emitRoom(room);
     emitViews(room);
+    emitDeadHistory(room);
+  };
+
+  const emitChat = (room, message) => {
+    if (message.channel !== 'dead') {
+      io.to(`room:${room.code}`).emit('chat:message', message);
+      return;
+    }
+    room.players
+      .filter((p) => !p.isBot && !p.left && rooms.isDead(room, p.id))
+      .forEach((p) => io.to(`p:${p.id}`).emit('chat:message', message));
   };
 
   const say = (room, botId, line) => {
     const result = rooms.postBotChat(room, botId, line, now());
     if (result.error) return null;
-    io.to(`room:${room.code}`).emit('chat:message', result.message);
+    emitChat(room, result.message);
     return result.message;
   };
 
@@ -212,8 +233,8 @@ export function createServer({
       cancelTtl(resumed.code);
       socket.join(`room:${resumed.code}`);
       emitRoom(resumed);
-      socket.emit('chat:history', resumed.chat);
       if (resumed.game) socket.emit('game:view', viewOf(resumed, playerId));
+      socket.emit('chat:history', rooms.visibleChat(resumed, playerId));
     }
 
     const on = (event, handler) => {
@@ -250,7 +271,7 @@ export function createServer({
       if (result.error) return result;
       joinRoomSockets(result.room);
       emitRoom(result.room);
-      socket.emit('chat:history', result.room.chat);
+      socket.emit('chat:history', rooms.visibleChat(result.room, playerId));
       return { ok: true, code: result.room.code };
     });
 
@@ -260,6 +281,13 @@ export function createServer({
       io.in(`p:${playerId}`).socketsLeave(`room:${result.room.code}`);
       if (result.closed) cancelTtl(result.room.code);
       else notify(result.room);
+      return { ok: true };
+    });
+
+    on('room:settings', (data) => {
+      const result = rooms.setCapacity(playerId, data.capacity);
+      if (result.error) return result;
+      emitRoom(result.room);
       return { ok: true };
     });
 
@@ -299,8 +327,8 @@ export function createServer({
       if (!room) return { error: 'NOT_IN_ROOM' };
       const result = rooms.postChat(room, playerId, data.text, now());
       if (result.error) return result;
-      io.to(`room:${room.code}`).emit('chat:message', result.message);
-      room.session?.observeChat(result.message);
+      emitChat(room, result.message);
+      if (result.message.channel === 'main') room.session?.observeChat(result.message);
       return { ok: true };
     });
 

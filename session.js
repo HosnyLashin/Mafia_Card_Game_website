@@ -1,4 +1,4 @@
-import { createGame, submit, tick, Phase } from './engine/engine.js';
+import { createGame, submit, tick, replaceWithBot as handOver, Phase } from './engine/engine.js';
 import { createBotTeam } from './engine/bots.js';
 
 export class GameSession {
@@ -29,6 +29,15 @@ export class GameSession {
 
   observeChat(message) {
     this.team?.observeChat(message);
+  }
+
+  replaceWithBot(playerId) {
+    if (this.destroyed || !handOver(this.game, playerId)) return;
+    if (!this.team) this.team = createBotTeam(this.game, this.rng);
+    this.team.adopt(playerId);
+    this.botKey = null;
+    this.chatKey = null;
+    this.sync();
   }
 
   act(playerId, action) {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createGame, submit, tick, alivePlayers, findPlayer, awaitingAction, Phase } from '../engine/engine.js';
+import { createGame, submit, tick, alivePlayers, findPlayer, awaitingAction, replaceWithBot, Phase } from '../engine/engine.js';
 import { viewFor } from '../engine/views.js';
 import { createRng } from '../engine/rng.js';
 
@@ -40,6 +40,7 @@ function passDay(game) {
   nightWith(game);
   goto(game, Phase.VOTE);
   voteWith(game);
+  goto(game, Phase.NIGHT);
 }
 
 test('creation enforces minimum players and assigns roles', () => {
@@ -144,14 +145,34 @@ test('dead players and wrong phases are rejected', () => {
 });
 
 test('night ends early when everyone has acted', () => {
-  const game = makeGame();
+  const game = makeGame({ config: { nightMinSeconds: 0 } });
   const deadline = game.deadline;
   for (const player of game.players) {
-    assert.equal(game.phase, Phase.NIGHT);
     submit(game, player.id, { type: 'night', target: null }, 1000);
   }
   assert.equal(game.phase, Phase.REPORT);
   assert.ok(1000 < deadline);
+});
+
+test('citizens have nothing to do at night and the night waits for the minimum time', () => {
+  const game = makeGame();
+  assert.equal(awaitingAction(game, 'p4'), false);
+  assert.equal(awaitingAction(game, 'p1'), true);
+  ['p1', 'p2', 'p3'].forEach((id) => submit(game, id, { type: 'night', target: null }, 1000));
+  assert.equal(game.phase, Phase.NIGHT);
+  assert.equal(game.deadline, game.nightEarliest);
+  assert.equal(game.nightEarliest, 8000);
+  tick(game, 7999);
+  assert.equal(game.phase, Phase.NIGHT);
+  tick(game, 8000);
+  assert.equal(game.phase, Phase.REPORT);
+});
+
+test('a short night is never stretched by the minimum time', () => {
+  const game = makeGame({ config: { seconds: { night: 3 } } });
+  assert.equal(game.nightEarliest, 3000);
+  ['p1', 'p2', 'p3'].forEach((id) => submit(game, id, { type: 'night', target: null }, 100));
+  assert.equal(game.deadline, 3000);
 });
 
 test('night resolves at the deadline and skips absent players', () => {
@@ -171,11 +192,13 @@ test('night resolves at the deadline and skips absent players', () => {
 test('missed counter resets after the player acts again', () => {
   const game = makeGame();
   tick(game, game.deadline);
-  assert.equal(findPlayer(game, 'p5').missed, 1);
+  assert.equal(findPlayer(game, 'p3').missed, 1);
+  assert.equal(findPlayer(game, 'p5').missed, 0);
   goto(game, Phase.VOTE);
   voteWith(game);
+  goto(game, Phase.NIGHT);
   nightWith(game);
-  assert.equal(findPlayer(game, 'p5').missed, 0);
+  assert.equal(findPlayer(game, 'p3').missed, 0);
 });
 
 test('mafia wins when it equals the rest', () => {
@@ -193,7 +216,8 @@ test('citizens win when the mafia is kicked', () => {
   nightWith(game);
   goto(game, Phase.VOTE);
   voteWith(game, { p1: 'p2', p2: 'p1', p3: 'p1', p4: 'p1', p5: 'p1', p6: 'p1' });
-  assert.equal(game.phase, Phase.DEFENSE);
+  assert.equal(game.phase, Phase.RESULT);
+  goto(game, Phase.DEFENSE);
   assert.equal(game.accused, 'p1');
   goto(game, Phase.REVOTE);
   tick(game, game.deadline);
@@ -207,7 +231,9 @@ test('a tied vote kicks nobody', () => {
   nightWith(game);
   goto(game, Phase.VOTE);
   voteWith(game, { p1: 'p2', p2: 'p1' });
-  assert.equal(game.phase, Phase.NIGHT);
+  assert.equal(game.phase, Phase.RESULT);
+  assert.equal(viewFor(game, 'p3').voteResult.tie, true);
+  goto(game, Phase.NIGHT);
   assert.equal(game.day, 2);
   assert.equal(alivePlayers(game).length, 6);
   assert.equal(game.consecutiveTies, 1);
@@ -230,7 +256,7 @@ test('a successful defense spares the accused who then plays on', () => {
   nightWith(game);
   goto(game, Phase.VOTE);
   voteWith(game, { p1: 'p4', p2: 'p4', p3: 'p4', p4: 'p1', p5: 'p4', p6: 'p4' });
-  assert.equal(game.phase, Phase.DEFENSE);
+  goto(game, Phase.DEFENSE);
   goto(game, Phase.REVOTE);
   assert.deepEqual(game.accusedVoters.sort(), ['p1', 'p2', 'p3', 'p5', 'p6']);
   ['p1', 'p2', 'p3'].forEach((id) => submit(game, id, { type: 'revote', choice: 'switch' }, game.deadline));
@@ -265,8 +291,9 @@ test('a player cannot use the defense twice', () => {
   nightWith(game);
   goto(game, Phase.VOTE);
   voteWith(game, votes);
+  goto(game, Phase.NIGHT);
   assert.equal(findPlayer(game, 'p4').alive, false);
-  assert.notEqual(game.phase, Phase.DEFENSE);
+  assert.ok(!game.events.some((e) => e.key === 'defense.spared' && e.day === 2));
 });
 
 test('only voters of the accused can revote', () => {
@@ -347,12 +374,13 @@ test('the vote tally is hidden until the vote resolves', () => {
 
 test('awaiting action reflects the phase', () => {
   const game = makeGame();
-  assert.equal(awaitingAction(game, 'p4'), true);
-  submit(game, 'p4', { type: 'night', target: null }, 0);
-  assert.equal(awaitingAction(game, 'p4'), false);
-  assert.equal(awaitingAction(game, 'p5'), true);
-  nightWith(game);
+  assert.equal(awaitingAction(game, 'p1'), true);
+  submit(game, 'p1', { type: 'night', target: null }, 0);
+  assert.equal(awaitingAction(game, 'p1'), false);
+  assert.equal(awaitingAction(game, 'p3'), true);
   assert.equal(awaitingAction(game, 'p5'), false);
+  nightWith(game);
+  assert.equal(awaitingAction(game, 'p3'), false);
 });
 
 test('phases advance on schedule with the configured durations', () => {
@@ -444,9 +472,62 @@ test('skip agreements reset every day and are hidden outside the discussion', ()
   goto(game, Phase.DISCUSSION);
   humansAgree(game, ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
   voteWith(game);
+  goto(game, Phase.NIGHT);
   assert.equal(game.phase, Phase.NIGHT);
   assert.equal(viewFor(game, 'p1').skip, null);
   nightWith(game);
   goto(game, Phase.DISCUSSION);
   assert.deepEqual(viewFor(game, 'p1').skip, { needed: 6, agreed: 0, mine: false });
+});
+
+test('the vote result is shown with the tally before anything happens', () => {
+  const game = makeGame();
+  nightWith(game);
+  goto(game, Phase.VOTE);
+  voteWith(game, { p1: 'p4', p2: 'p4', p3: 'p5', p4: 'p1', p5: 'p1', p6: 'p4' });
+  assert.equal(game.phase, Phase.RESULT);
+  const view = viewFor(game, 'p2');
+  assert.deepEqual(view.voteResult, { counts: { p4: 3, p1: 2, p5: 1 }, accusedId: 'p4', tie: false });
+  assert.equal(view.accused, 'p4');
+  assert.equal(findPlayer(game, 'p4').alive, true);
+  tick(game, game.deadline);
+  assert.equal(game.phase, Phase.DEFENSE);
+});
+
+test('a tied result is announced and then the game moves on', () => {
+  const game = makeGame();
+  nightWith(game);
+  goto(game, Phase.VOTE);
+  voteWith(game, { p1: 'p2', p2: 'p3', p3: 'p4', p4: 'p5', p5: 'p6', p6: 'p1' });
+  assert.equal(game.phase, Phase.RESULT);
+  assert.equal(viewFor(game, 'p2').voteResult.tie, true);
+  assert.equal(viewFor(game, 'p2').voteResult.accusedId, null);
+  assert.ok(game.events.some((e) => e.key === 'vote.tied'));
+  assert.equal(game.consecutiveTies, 0);
+  tick(game, game.deadline);
+  assert.equal(game.phase, Phase.NIGHT);
+  assert.equal(game.consecutiveTies, 1);
+  assert.equal(viewFor(game, 'p2').voteResult, null);
+});
+
+test('actions are refused while the result is on screen', () => {
+  const game = makeGame();
+  nightWith(game);
+  goto(game, Phase.VOTE);
+  voteWith(game, { p1: 'p4', p2: 'p4' });
+  assert.equal(game.phase, Phase.RESULT);
+  assert.deepEqual(submit(game, 'p1', { type: 'vote', target: 'p2' }, 0), { error: 'WRONG_PHASE' });
+});
+
+test('a seat can be handed over to a bot', () => {
+  const game = makeGame();
+  assert.equal(replaceWithBot(game, 'p4'), true);
+  assert.equal(findPlayer(game, 'p4').isBot, true);
+  assert.equal(replaceWithBot(game, 'p4'), false);
+  assert.equal(replaceWithBot(game, 'nobody'), false);
+  assert.deepEqual(game.events.find((e) => e.key === 'player.replaced').params, { playerId: 'p4' });
+  nightWith(game);
+  goto(game, Phase.DISCUSSION);
+  ['p1', 'p2', 'p3', 'p5', 'p6'].forEach((id) => submit(game, id, { type: 'skip', agree: true }, game.deadline));
+  assert.equal(game.phase, Phase.VOTE);
 });

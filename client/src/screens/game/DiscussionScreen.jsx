@@ -1,15 +1,23 @@
 import { useI18n } from '../../i18n/index.jsx';
 import Chat from '../../components/Chat.jsx';
 import EventLog from '../../components/EventLog.jsx';
+import GameLayout from '../../components/GameLayout.jsx';
 import PlayersStrip from '../../components/PlayersStrip.jsx';
 
-export default function DiscussionScreen({ view, act, busy }) {
+export default function DiscussionScreen({ view, act, busy, extraSide }) {
   const { t } = useI18n();
   const todays = view.events.filter((event) => event.day === view.day);
   const { skip, me } = view;
   return (
-    <>
-      <EventLog events={todays} players={view.players} />
+    <GameLayout
+      side={
+        <>
+          <EventLog events={todays} players={view.players} />
+          <PlayersStrip players={view.players} />
+          {extraSide}
+        </>
+      }
+    >
       <Chat canSend={me.alive} closedKey="chat.dead" />
       {me.alive && skip && skip.needed > 0 && (
         <section className="skip">
@@ -27,7 +35,6 @@ export default function DiscussionScreen({ view, act, busy }) {
           </p>
         </section>
       )}
-      <PlayersStrip players={view.players} />
-    </>
+    </GameLayout>
   );
 }

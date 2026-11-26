@@ -58,6 +58,7 @@ export function createConnection({ url, storage, ioFactory = io, timeoutMs = 800
     socket.on('chat:message', (message) => set({ chat: [...state.chat, message].slice(-CHAT_LIMIT) }));
     socket.on('room:closed', () => clearRoom('closed'));
     socket.on('room:kicked', () => clearRoom('kicked'));
+    socket.on('room:replaced', () => clearRoom('inactive'));
   }
 
   function request(event, payload = {}) {

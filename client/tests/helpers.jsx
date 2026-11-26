@@ -60,10 +60,20 @@ export const lobbyState = (overrides = {}) => ({
   minPlayers: 6,
   maxPlayers: 12,
   capacity: 6,
+  practice: false,
+  settings: {
+    discussionSeconds: null,
+    nightSeconds: null,
+    voteSeconds: null,
+    mafiaCount: 'auto',
+    publicVotes: false,
+    revealDeadRoles: true,
+  },
+  spectators: [],
   players: [
-    { id: 'g_me', name: 'Hosny', isBot: false, connected: true, left: false },
-    { id: 'g_sam', name: 'Sam', isBot: false, connected: true, left: false },
-    { id: 'bot-1', name: 'Bot 1', isBot: true, connected: false, left: false },
+    { id: 'g_me', name: 'Hosny', isBot: false, connected: true, left: false, avatar: '😀', color: 'teal' },
+    { id: 'g_sam', name: 'Sam', isBot: false, connected: true, left: false, avatar: '🦊', color: 'red' },
+    { id: 'bot-1', name: 'Mona', isBot: true, connected: false, left: false, avatar: '🤖', color: 'blue' },
   ],
   ...overrides,
 });

@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { useI18n } from '../i18n/index.jsx';
 import { useConnection } from '../net/ConnectionProvider.jsx';
+import { useProfile } from '../profile.js';
 import { safeStorage } from '../storage.js';
+import SettingsButton from '../settings/SettingsPanel.jsx';
 import ErrorText from '../components/ErrorText.jsx';
 import HowToButton from '../components/HowToButton.jsx';
 import LanguageSwitcher from '../components/LanguageSwitcher.jsx';
+import ProfilePicker from '../components/ProfilePicker.jsx';
 
 const NAME_KEY = 'mafia.name';
 const CODE_LENGTH = 4;
@@ -20,9 +23,11 @@ const codeFromUrl = () => normalizeCode(new URLSearchParams(window.location.sear
 export default function Home() {
   const { t } = useI18n();
   const { state, request } = useConnection();
+  const { profile, update } = useProfile();
   const [storage] = useState(safeStorage);
   const [name, setName] = useState(() => storage.getItem(NAME_KEY) ?? '');
   const [code, setCode] = useState(codeFromUrl);
+  const [watchOnly, setWatchOnly] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const online = state.status === 'connected';
@@ -36,14 +41,15 @@ export default function Home() {
     storage.setItem(NAME_KEY, clean);
     setBusy(true);
     setError(null);
-    const result = await request(event, { ...payload, name: clean });
+    const result = await request(event, { ...payload, name: clean, avatar: profile.avatar, color: profile.color });
     setBusy(false);
     if (result.error) setError(result.error);
   }
 
   return (
-    <main className="screen home">
+    <main className="screen home" id="main" tabIndex={-1}>
       <header className="topbar">
+        <SettingsButton />
         <LanguageSwitcher />
       </header>
 
@@ -62,6 +68,8 @@ export default function Home() {
         />
       </div>
 
+      <ProfilePicker profile={profile} onChange={update} />
+
       <button
         type="button"
         className="button primary"
@@ -70,13 +78,21 @@ export default function Home() {
       >
         {t('home.create')}
       </button>
+      <button
+        type="button"
+        className="button secondary"
+        disabled={!online || busy}
+        onClick={() => submit('room:practice', {})}
+      >
+        {t('home.practice')}
+      </button>
 
       <section className="join">
         <h2>{t('home.join.heading')}</h2>
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            submit('room:join', { code });
+            submit('room:join', { code, spectator: watchOnly });
           }}
         >
           <div className="field">
@@ -93,6 +109,10 @@ export default function Home() {
               onChange={(event) => setCode(normalizeCode(event.target.value))}
             />
           </div>
+          <label className="switch">
+            <input type="checkbox" checked={watchOnly} onChange={(event) => setWatchOnly(event.target.checked)} />
+            <span>{t('home.watchOnly')}</span>
+          </label>
           <button
             type="submit"
             className="button secondary"

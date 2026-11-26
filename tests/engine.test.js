@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createGame, submit, tick, alivePlayers, findPlayer, awaitingAction, replaceWithBot, Phase } from '../engine/engine.js';
-import { viewFor } from '../engine/views.js';
+import { createGame, submit, tick, alivePlayers, findPlayer, awaitingAction, replaceWithBot, inactivePlayers, Phase } from '../engine/engine.js';
+import { viewFor, spectatorView } from '../engine/views.js';
 import { createRng } from '../engine/rng.js';
 
 function makeGame({ count = 6, roles = {}, config = {}, seed = 1, bots = [] } = {}) {
@@ -529,5 +529,127 @@ test('a seat can be handed over to a bot', () => {
   nightWith(game);
   goto(game, Phase.DISCUSSION);
   ['p1', 'p2', 'p3', 'p5', 'p6'].forEach((id) => submit(game, id, { type: 'skip', agree: true }, game.deadline));
+  assert.equal(game.phase, Phase.VOTE);
+});
+
+test('the recap records every night and vote and is shown only when the game is over', () => {
+  const game = makeGame();
+  nightWith(game, { p1: 'p4', p2: 'p4', p3: 'p1' });
+  assert.equal(viewFor(game, 'p5').recap, null);
+  goto(game, Phase.VOTE);
+  voteWith(game, { p1: 'p5', p2: 'p5', p3: 'p5', p5: 'p1', p6: 'p5' });
+  goto(game, Phase.DEFENSE);
+  goto(game, Phase.REVOTE);
+  tick(game, game.deadline);
+  assert.equal(game.phase, Phase.NIGHT);
+  const first = game.history[0];
+  assert.equal(first.day, 1);
+  assert.equal(first.mafiaPick, 'p4');
+  assert.equal(first.doctorPick, 'p4');
+  assert.equal(first.saved, true);
+  assert.equal(first.victimId, null);
+  assert.equal(first.policeSuspect, 'p1');
+  assert.equal(first.policeResult, 'right');
+  assert.equal(first.vote.accusedId, 'p5');
+  assert.equal(first.outcome, 'kicked');
+  assert.equal(first.kickedId, 'p5');
+
+  ['p4', 'p6'].forEach((id) => {
+    findPlayer(game, id).alive = false;
+  });
+  nightWith(game, { p1: 'p3' });
+  assert.equal(game.phase, Phase.ENDED);
+  const recap = viewFor(game, 'p2').recap;
+  assert.equal(recap.length, 2);
+  assert.equal(recap[1].victimId, 'p3');
+  assert.equal(recap[1].saved, false);
+});
+
+test('a tie and a spared player are recorded in the recap', () => {
+  const tied = makeGame();
+  nightWith(tied);
+  goto(tied, Phase.VOTE);
+  voteWith(tied, { p1: 'p2', p2: 'p1' });
+  goto(tied, Phase.NIGHT);
+  assert.equal(tied.history[0].outcome, 'tie');
+
+  const spared = makeGame();
+  nightWith(spared);
+  goto(spared, Phase.VOTE);
+  voteWith(spared, { p1: 'p4', p2: 'p4', p3: 'p4', p4: 'p1', p5: 'p4', p6: 'p4' });
+  goto(spared, Phase.REVOTE);
+  ['p1', 'p2', 'p3', 'p5', 'p6'].forEach((id) => submit(spared, id, { type: 'revote', choice: 'switch' }, spared.deadline));
+  assert.equal(spared.history[0].outcome, 'spared');
+});
+
+test('the mafia count can be set and is kept sensible', () => {
+  const count = (game) => game.players.filter((p) => p.role === 'mafia').length;
+  const two = makeGame({ count: 9, config: { mafiaCount: 2 } });
+  const makeRoles = (n, config) => createGame({ players: Array.from({ length: n }, (_, i) => ({ id: `r${i}`, name: 'r' })), config, rng: createRng(5) });
+  assert.equal(count(makeRoles(9, { mafiaCount: 2 })), 2);
+  assert.equal(count(makeRoles(6, { mafiaCount: 3 })), 1);
+  assert.equal(count(makeRoles(10, { mafiaCount: 3 })), 3);
+  assert.equal(count(makeRoles(9, { mafiaCount: null })), 1);
+  assert.ok(two);
+});
+
+test('votes can be made public after the count', () => {
+  const secret = makeGame();
+  nightWith(secret);
+  goto(secret, Phase.VOTE);
+  voteWith(secret, { p1: 'p4', p2: 'p4', p3: 'p5' });
+  assert.equal(viewFor(secret, 'p2').voteResult.voters, undefined);
+
+  const open = makeGame({ config: { publicVotes: true } });
+  nightWith(open);
+  goto(open, Phase.VOTE);
+  voteWith(open, { p1: 'p4', p2: 'p4', p3: 'p5' });
+  assert.deepEqual(viewFor(open, 'p2').voteResult.voters, { p4: ['p1', 'p2'], p5: ['p3'] });
+});
+
+test('dead players stay hidden when role reveals are switched off', () => {
+  const game = makeGame({ config: { revealRoleOnNightDeath: false, revealRoleOnKick: false } });
+  nightWith(game, { p1: 'p4' });
+  assert.deepEqual(game.events.find((e) => e.key === 'night.died').params, { playerId: 'p4' });
+  assert.equal(viewFor(game, 'p5').players.find((p) => p.id === 'p4').role, null);
+  goto(game, Phase.VOTE);
+  voteWith(game, { p1: 'p5', p2: 'p5', p3: 'p5', p5: 'p1', p6: 'p5' });
+  goto(game, Phase.REVOTE);
+  tick(game, game.deadline);
+  assert.deepEqual(game.events.find((e) => e.key === 'vote.kicked').params, { playerId: 'p5' });
+  assert.equal(viewFor(game, 'p6').players.find((p) => p.id === 'p5').role, null);
+});
+
+test('players who keep missing their turns are reported as inactive', () => {
+  const game = makeGame({ config: { afkStrikes: 2 }, bots: ['p6'] });
+  assert.deepEqual(inactivePlayers(game), []);
+  tick(game, game.deadline);
+  assert.deepEqual(inactivePlayers(game), []);
+  goto(game, Phase.VOTE);
+  tick(game, game.deadline);
+  assert.deepEqual(inactivePlayers(game).map((p) => p.id).sort(), ['p1', 'p2', 'p3']);
+  goto(game, Phase.NIGHT);
+  submit(game, 'p1', { type: 'night', target: null }, game.deadline);
+  tick(game, game.deadline);
+  const later = inactivePlayers(game).map((p) => p.id).sort();
+  assert.ok(!later.includes('p1'));
+  assert.ok(later.includes('p2') && later.includes('p3'));
+  assert.ok(!later.includes('p6'));
+});
+
+test('spectators only see what everyone can see', () => {
+  const game = makeGame();
+  nightWith(game, { p1: 'p4' });
+  const view = spectatorView(game);
+  assert.equal(view.spectator, true);
+  assert.equal(view.me.role, null);
+  assert.equal(view.players.find((p) => p.id === 'p1').role, null);
+  assert.equal(view.players.find((p) => p.id === 'p4').role, 'citizen');
+  assert.equal(view.recap, null);
+  assert.ok(!JSON.stringify(view).includes('nightActions'));
+  ['p5', 'p6', 'p3', 'p2'].forEach((id) => {
+    findPlayer(game, id).alive = false;
+  });
+  goto(game, Phase.VOTE);
   assert.equal(game.phase, Phase.VOTE);
 });

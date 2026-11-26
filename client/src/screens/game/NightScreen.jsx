@@ -1,4 +1,5 @@
 import { useI18n } from '../../i18n/index.jsx';
+import Chat from '../../components/Chat.jsx';
 import GameLayout from '../../components/GameLayout.jsx';
 import PlayerPicker from '../../components/PlayerPicker.jsx';
 import PlayersStrip from '../../components/PlayersStrip.jsx';
@@ -18,8 +19,13 @@ function candidatesFor(view) {
 export default function NightScreen({ view, act, busy, extraSide }) {
   const { t } = useI18n();
   const { me } = view;
+  const mafiaAlive = view.players.filter((p) => p.alive && p.role === 'mafia').length;
+  const canWhisper = me.alive && me.role === 'mafia' && mafiaAlive >= 2;
   const side = (
     <>
+      {canWhisper && (
+        <Chat channel="mafia" canSend titleKey="chat.mafiaTitle" emptyKey="chat.mafiaEmpty" hintKey="chat.mafiaHint" />
+      )}
       <PlayersStrip players={view.players} />
       {extraSide}
     </>

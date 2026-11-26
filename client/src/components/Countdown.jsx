@@ -19,7 +19,7 @@ export default function Countdown({ deadline }) {
   const minutes = Math.floor(seconds / 60);
   const rest = String(seconds % 60).padStart(2, '0');
   return (
-    <span className="countdown" dir="ltr">
+    <span className="countdown" dir="ltr" role="timer" aria-live="off">
       {minutes}:{rest}
     </span>
   );

@@ -30,7 +30,7 @@ describe('home screen', () => {
     await userEvent.type(screen.getByLabelText('Your name'), '  Hosny ');
     await userEvent.click(screen.getByRole('button', { name: 'Create room' }));
     await waitFor(() => expect(env.sent.some((s) => s.event === 'room:create')).toBe(true));
-    expect(env.sent.find((s) => s.event === 'room:create').payload).toEqual({ name: 'Hosny' });
+    expect(env.sent.find((s) => s.event === 'room:create').payload).toEqual({ name: 'Hosny', avatar: '😀', color: 'teal' });
     expect(window.localStorage.getItem('mafia.name')).toBe('Hosny');
   });
 
@@ -55,7 +55,7 @@ describe('home screen', () => {
     await userEvent.type(screen.getByLabelText('Room code'), 'zzzz');
     await userEvent.click(screen.getByRole('button', { name: 'Join room' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('No room matches that code.');
-    expect(env.sent.find((s) => s.event === 'room:join').payload).toEqual({ code: 'ZZZZ', name: 'Sam' });
+    expect(env.sent.find((s) => s.event === 'room:join').payload).toEqual({ code: 'ZZZZ', spectator: false, name: 'Sam', avatar: '😀', color: 'teal' });
   });
 
   it('prefills the code from an invite link', () => {

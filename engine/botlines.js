@@ -12,6 +12,7 @@ export const LINE_CATEGORIES = [
   'sure',
   'vouch',
   'counter',
+  'plan',
   'defense',
   'filler',
 ];

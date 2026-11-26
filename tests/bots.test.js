@@ -5,6 +5,9 @@ import { createBotTeam } from '../engine/bots.js';
 import { LINE_CATEGORIES, LINE_VARIANTS } from '../engine/botlines.js';
 import { createRng } from '../engine/rng.js';
 import { simulateGame } from '../engine/simulate.js';
+import { BOT_NAMES } from '../engine/botnames.js';
+import { QUICK_IDS } from '../engine/quick.js';
+import { AVATARS, COLORS, cleanProfile } from '../profile.js';
 
 function botGame({ count = 6, roles = {}, humans = [], seed = 3, names = {} } = {}) {
   const players = Array.from({ length: count }, (_, i) => ({
@@ -125,7 +128,8 @@ test('citizen bots follow what a human accuses in the chat', () => {
   say(team, game, 'p1', 'I am sure P4 is the mafia');
   goto(game, team, Phase.VOTE);
   const voters = ['p2', 'p3', 'p5', 'p6'];
-  voters.forEach((id) => assert.equal(team.act(id).target, 'p4', id));
+  const picks = voters.map((id) => team.act(id).target);
+  assert.ok(picks.filter((target) => target === 'p4').length >= 3, picks.join());
 });
 
 test('players who stay silent look more suspicious', () => {
@@ -253,4 +257,77 @@ test('a push from the police bot moves the other bots against the mafia', () => 
   const voters = ['p2', 'p4', 'p5', 'p6'].filter((id) => findPlayer(game, id).alive);
   const targets = voters.map((id) => team.act(id).target);
   assert.ok(targets.filter((t) => t === 'p1').length >= Math.ceil(voters.length / 2));
+});
+
+test('bot personalities change how much a bot talks', () => {
+  const { game, team } = botGame();
+  botsAct(game, team);
+  goto(game, team, Phase.DISCUSSION);
+  const seen = {};
+  for (let seed = 1; seed <= 200; seed++) {
+    const fresh = botGame({ seed });
+    botsAct(fresh.game, fresh.team);
+    goto(fresh.game, fresh.team, Phase.DISCUSSION);
+    fresh.game.players.forEach((p) => {
+      const persona = fresh.team.persona(p.id);
+      (seen[persona] ??= []).push(fresh.team.chatTurns(p.id));
+    });
+  }
+  assert.deepEqual(Object.keys(seen).sort(), ['balanced', 'quiet', 'suspicious', 'talkative']);
+  assert.ok(Math.max(...seen.quiet) <= 1);
+  assert.ok(Math.min(...seen.talkative) >= 2);
+  assert.ok(Math.max(...seen.talkative) <= 4);
+  assert.ok(Math.min(...seen.balanced) >= 1 && Math.max(...seen.balanced) <= 3);
+  assert.equal(team.chatTurns('p2') >= 0, true);
+});
+
+test('suspicious bots accuse first', () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    const { game, team } = botGame({ seed, roles: { p1: 'citizen', p2: 'citizen', p3: 'mafia', p4: 'citizen', p5: 'citizen', p6: 'citizen' } });
+    const suspicious = game.players.find((p) => team.persona(p.id) === 'suspicious');
+    if (!suspicious) continue;
+    botsAct(game, team);
+    goto(game, team, Phase.DISCUSSION);
+    if (!findPlayer(game, suspicious.id).alive) continue;
+    let line = null;
+    for (let i = 0; i < 6; i++) {
+      line = team.nextLine(suspicious.id);
+      if (line && !['open', 'mourn', 'nodeath', 'defend'].includes(line.key)) break;
+    }
+    if (!line) continue;
+    assert.equal(line.key, 'suspect');
+    return;
+  }
+  assert.fail('no suspicious bot found');
+});
+
+test('a bot mafia member tells its human partner the plan at night', () => {
+  const { game, team } = botGame({ humans: ['p1'], roles: { p1: 'mafia', p2: 'mafia', p3: 'doctor', p4: 'police' } });
+  const line = team.nextLine('p2');
+  assert.equal(line.key, 'plan');
+  assert.ok(findPlayer(game, line.params.target));
+  assert.notEqual(findPlayer(game, line.params.target).role, 'mafia');
+  assert.equal(team.nextLine('p2'), null);
+  assert.equal(team.nextLine('p3'), null);
+});
+
+test('bots keep quiet at night when no human mafia is there to talk to', () => {
+  const { team } = botGame({ roles: { p1: 'mafia', p2: 'mafia' } });
+  assert.equal(team.nextLine('p1'), null);
+  assert.equal(team.nextLine('p2'), null);
+});
+
+test('bot names are Egyptian names that are all different', () => {
+  assert.ok(BOT_NAMES.length >= 24);
+  assert.equal(new Set(BOT_NAMES.map((n) => n.toLowerCase())).size, BOT_NAMES.length);
+  BOT_NAMES.forEach((name) => assert.match(name, /^[A-Z][a-z]+$/));
+});
+
+test('profile and quick message lists are valid', () => {
+  assert.equal(new Set(AVATARS).size, AVATARS.length);
+  assert.equal(new Set(COLORS).size, COLORS.length);
+  assert.deepEqual(cleanProfile({ avatar: AVATARS[3], color: 'blue' }), { avatar: AVATARS[3], color: 'blue' });
+  const fixed = cleanProfile({ avatar: '<script>', color: 'neon' }, 2);
+  assert.ok(AVATARS.includes(fixed.avatar) && COLORS.includes(fixed.color));
+  assert.equal(new Set(QUICK_IDS).size, QUICK_IDS.length);
 });

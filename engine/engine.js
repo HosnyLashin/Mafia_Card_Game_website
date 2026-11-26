@@ -45,7 +45,8 @@ function schedule(game, phase, now) {
 }
 
 function buildRoles(count, config) {
-  const mafia = mafiaCount(count, config);
+  const wanted = config.mafiaCount ?? mafiaCount(count, config);
+  const mafia = Math.max(1, Math.min(wanted, Math.floor((count - 1) / 3)));
   const roles = [
     ...Array(mafia).fill(Role.MAFIA),
     Role.DOCTOR,
@@ -80,6 +81,7 @@ export function createGame({ players, config, rng = Math.random, now = 0 }) {
       revealed: false,
       missed: 0,
     })),
+    history: [],
     nightActions: {},
     votes: {},
     revotes: {},
@@ -296,6 +298,18 @@ function resolveNight(game, now) {
   }
 
   game.report = { victimId, policeResult };
+  game.history.push({
+    day: game.day,
+    mafiaPick: chosen,
+    doctorPick: healed,
+    policeSuspect: suspect,
+    policeResult,
+    victimId,
+    saved: chosen !== null && chosen === healed,
+    vote: null,
+    outcome: null,
+    kickedId: null,
+  });
 
   if (victimId !== null) {
     const victim = findPlayer(game, victimId);
@@ -310,12 +324,19 @@ function resolveNight(game, now) {
   if (!checkWin(game)) schedule(game, Phase.REPORT, now);
 }
 
+const todayEntry = (game) => game.history.find((entry) => entry.day === game.day);
+
 function kick(game, playerId, now) {
   const player = findPlayer(game, playerId);
   player.alive = false;
-  player.revealed = true;
+  player.revealed = game.config.revealRoleOnKick;
   game.consecutiveTies = 0;
-  emit(game, 'vote.kicked', { playerId, role: player.role });
+  const entry = todayEntry(game);
+  if (entry) {
+    entry.outcome = 'kicked';
+    entry.kickedId = playerId;
+  }
+  emit(game, 'vote.kicked', player.revealed ? { playerId, role: player.role } : { playerId });
   if (!checkWin(game)) nextNight(game, now);
 }
 
@@ -326,7 +347,13 @@ function resolveVote(game, now) {
   const counts = tally(Object.values(game.votes).filter((target) => target !== null));
   const top = leaders(counts);
   const tie = top.length !== 1;
-  game.voteResult = { counts: Object.fromEntries(counts), accusedId: tie ? null : top[0], tie };
+  const byTarget = {};
+  Object.entries(game.votes).forEach(([voter, target]) => {
+    if (target !== null) (byTarget[target] ??= []).push(voter);
+  });
+  game.voteResult = { counts: Object.fromEntries(counts), accusedId: tie ? null : top[0], tie, voters: byTarget };
+  const entry = todayEntry(game);
+  if (entry) entry.vote = { counts: game.voteResult.counts, accusedId: game.voteResult.accusedId, tie };
 
   if (tie) {
     emit(game, 'vote.tied');
@@ -342,6 +369,8 @@ function resolveVote(game, now) {
 
 function finishResult(game, now) {
   if (game.voteResult.tie) {
+    const entry = todayEntry(game);
+    if (entry) entry.outcome = 'tie';
     game.consecutiveTies += 1;
     if (game.consecutiveTies >= game.config.maxConsecutiveTies) {
       endGame(game, 'mafia', 'stalemate');
@@ -369,6 +398,11 @@ function resolveRevote(game, now) {
   const accusedId = game.accused;
 
   if (switched * 2 > game.accusedVoters.length) {
+    const entry = todayEntry(game);
+    if (entry) {
+      entry.outcome = 'spared';
+      entry.kickedId = null;
+    }
     game.defenseUsed.push(accusedId);
     emit(game, 'defense.spared', { playerId: accusedId });
     nextNight(game, now);
@@ -421,4 +455,8 @@ export function replaceWithBot(game, playerId) {
   player.isBot = true;
   emit(game, 'player.replaced', { playerId });
   return true;
+}
+
+export function inactivePlayers(game) {
+  return alivePlayers(game).filter((p) => !p.isBot && p.missed >= game.config.afkStrikes);
 }

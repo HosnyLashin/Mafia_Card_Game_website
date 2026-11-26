@@ -4,9 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import { createIdentity } from './identity.js';
-import { Rooms } from './rooms.js';
+import { Rooms, buildGameConfig } from './rooms.js';
 import { GameSession } from './session.js';
-import { viewFor } from './engine/views.js';
+import { viewFor, spectatorView } from './engine/views.js';
 
 const RATE_WINDOW_MS = 10000;
 const RATE_LIMIT = 60;
@@ -112,13 +112,16 @@ export function createServer({
 
   const emitRoom = (room) => io.to(`room:${room.code}`).emit('room:state', rooms.publicState(room));
 
-  const viewOf = (room, playerId) => ({ ...viewFor(room.game, playerId), serverNow: now() });
+  const viewOf = (room, playerId) => ({
+    ...(rooms.isSpectator(room, playerId) ? spectatorView(room.game) : viewFor(room.game, playerId)),
+    serverNow: now(),
+  });
 
   const emitViews = (room) => {
     if (!room.game) return;
-    room.players
-      .filter((p) => !p.isBot && !p.left)
-      .forEach((p) => io.to(`p:${p.id}`).emit('game:view', viewOf(room, p.id)));
+    [...room.players.filter((p) => !p.isBot && !p.left), ...room.spectators].forEach((p) =>
+      io.to(`p:${p.id}`).emit('game:view', viewOf(room, p.id)),
+    );
   };
 
   const emitDeadHistory = (room) => {
@@ -138,13 +141,30 @@ export function createServer({
   };
 
   const emitChat = (room, message) => {
-    if (message.channel !== 'dead') {
+    if (message.channel === 'main') {
       io.to(`room:${room.code}`).emit('chat:message', message);
       return;
     }
+    const sees =
+      message.channel === 'dead'
+        ? (p) => rooms.isDead(room, p.id)
+        : (p) => rooms.roleOf(room, p.id) === 'mafia';
     room.players
-      .filter((p) => !p.isBot && !p.left && rooms.isDead(room, p.id))
+      .filter((p) => !p.isBot && !p.left && sees(p))
       .forEach((p) => io.to(`p:${p.id}`).emit('chat:message', message));
+  };
+
+  const startSession = (room) => {
+    const session = new GameSession(room, {
+      now,
+      rng,
+      config: buildGameConfig(room, gameConfig),
+      notify,
+      say,
+      onInactive: handleInactive,
+    });
+    room.session = session;
+    session.start();
   };
 
   const say = (room, botId, line) => {
@@ -153,6 +173,13 @@ export function createServer({
     emitChat(room, result.message);
     return result.message;
   };
+
+  function handleInactive(room, playerId) {
+    const result = rooms.removePlayer(playerId);
+    io.to(`p:${playerId}`).emit('room:replaced', { reason: 'inactive' });
+    io.in(`p:${playerId}`).socketsLeave(`room:${room.code}`);
+    if (result && !result.closed) notify(room);
+  }
 
   const cancelTtl = (code) => {
     clearTimeout(ttlTimers.get(code));
@@ -180,6 +207,13 @@ export function createServer({
   const onGraceExpired = (playerId) => {
     graceTimers.delete(playerId);
     const room = rooms.roomOf(playerId);
+    if (room && rooms.isSpectator(room, playerId)) {
+      if (!room.spectators.find((s) => s.id === playerId)?.connected) {
+        rooms.removePlayer(playerId);
+        emitRoom(room);
+      }
+      return;
+    }
     const player = room?.players.find((p) => p.id === playerId);
     if (!room || !player || player.connected) return;
     if (room.phase === 'lobby') {
@@ -259,20 +293,34 @@ export function createServer({
     const joinRoomSockets = (room) => io.in(`p:${playerId}`).socketsJoin(`room:${room.code}`);
 
     on('room:create', (data) => {
-      const result = rooms.create(playerId, data.name);
+      const result = rooms.create(playerId, data.name, data);
       if (result.error) return result;
       joinRoomSockets(result.room);
       emitRoom(result.room);
       return { ok: true, code: result.room.code };
     });
 
+    on('room:practice', (data) => {
+      const created = rooms.create(playerId, data.name, data, { practice: true });
+      if (created.error) return created;
+      joinRoomSockets(created.room);
+      const prepared = rooms.prepareStart(playerId, true);
+      if (prepared.error) return prepared;
+      startSession(created.room);
+      return { ok: true, code: created.room.code };
+    });
+
     on('room:join', (data) => {
-      const result = rooms.join(data.code, playerId, data.name);
+      const spectating = data.spectator === true;
+      const result = spectating
+        ? rooms.joinSpectator(data.code, playerId, data.name, data)
+        : rooms.join(data.code, playerId, data.name, data);
       if (result.error) return result;
       joinRoomSockets(result.room);
       emitRoom(result.room);
       socket.emit('chat:history', rooms.visibleChat(result.room, playerId));
-      return { ok: true, code: result.room.code };
+      if (result.room.game) socket.emit('game:view', viewOf(result.room, playerId));
+      return { ok: true, code: result.room.code, spectator: spectating };
     });
 
     on('room:leave', () => {
@@ -285,7 +333,7 @@ export function createServer({
     });
 
     on('room:settings', (data) => {
-      const result = rooms.setCapacity(playerId, data.capacity);
+      const result = rooms.setSettings(playerId, data);
       if (result.error) return result;
       emitRoom(result.room);
       return { ok: true };
@@ -303,9 +351,14 @@ export function createServer({
     on('room:start', (data) => {
       const result = rooms.prepareStart(playerId, data.fillWithBots === true);
       if (result.error) return result;
-      const session = new GameSession(result.room, { now, rng, config: gameConfig, notify, say });
-      result.room.session = session;
-      session.start();
+      startSession(result.room);
+      return { ok: true };
+    });
+
+    on('room:rematch', () => {
+      const result = rooms.rematch(playerId);
+      if (result.error) return result;
+      startSession(result.room);
       return { ok: true };
     });
 
@@ -320,6 +373,15 @@ export function createServer({
       const room = rooms.roomOf(playerId);
       if (!room || room.phase !== 'playing') return { error: 'NOT_PLAYING' };
       return room.session.act(playerId, data.action);
+    });
+
+    on('chat:quick', (data) => {
+      const room = rooms.roomOf(playerId);
+      if (!room) return { error: 'NOT_IN_ROOM' };
+      const result = rooms.postQuick(room, playerId, data.id, now());
+      if (result.error) return result;
+      emitChat(room, result.message);
+      return { ok: true };
     });
 
     on('chat:send', (data) => {

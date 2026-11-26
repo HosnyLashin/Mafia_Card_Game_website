@@ -1,9 +1,31 @@
 import { cleanName, cleanMessage } from './text.js';
 import { LINE_CATEGORIES, LINE_VARIANTS } from './engine/botlines.js';
+import { QUICK_IDS } from './engine/quick.js';
+import { BOT_NAMES } from './engine/botnames.js';
+import { cleanProfile } from './profile.js';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const CHAT_INTERVAL_MS = 700;
 const CHAT_HISTORY = 200;
+const MAX_SPECTATORS = 10;
+
+export const SETTING_CHOICES = {
+  discussionSeconds: [30, 60, 90, 120, 180],
+  nightSeconds: [20, 30, 45, 60],
+  voteSeconds: [20, 30, 45, 60],
+  mafiaCount: ['auto', 1, 2, 3],
+};
+
+const BOOLEAN_SETTINGS = ['publicVotes', 'revealDeadRoles'];
+
+const defaultSettings = () => ({
+  discussionSeconds: null,
+  nightSeconds: null,
+  voteSeconds: null,
+  mafiaCount: 'auto',
+  publicVotes: false,
+  revealDeadRoles: true,
+});
 
 const validLine = (line) =>
   Boolean(line) &&
@@ -14,8 +36,33 @@ const validLine = (line) =>
   typeof line.params === 'object' &&
   Object.entries(line.params).every(([name, value]) => name === 'target' && typeof value === 'string' && value.length <= 40);
 
-const member = (id, name, isBot = false) => ({ id, name, isBot, connected: !isBot, left: false });
+const member = (id, name, isBot, profile) => ({
+  id,
+  name,
+  isBot,
+  connected: !isBot,
+  left: false,
+  avatar: profile.avatar,
+  color: profile.color,
+});
+
 const isHuman = (p) => !p.isBot && !p.left;
+
+export function buildGameConfig(room, base = {}) {
+  const { settings } = room;
+  const seconds = { ...(base.seconds ?? {}) };
+  if (settings.discussionSeconds) seconds.discussion = settings.discussionSeconds;
+  if (settings.nightSeconds) seconds.night = settings.nightSeconds;
+  if (settings.voteSeconds) seconds.vote = settings.voteSeconds;
+  return {
+    ...base,
+    seconds,
+    mafiaCount: settings.mafiaCount === 'auto' ? null : settings.mafiaCount,
+    publicVotes: settings.publicVotes,
+    revealRoleOnNightDeath: settings.revealDeadRoles,
+    revealRoleOnKick: settings.revealDeadRoles,
+  };
+}
 
 export class Rooms {
   constructor({ minPlayers = 6, maxPlayers = 12, rng = Math.random } = {}) {
@@ -47,7 +94,11 @@ export class Rooms {
     return room.players.filter(isHuman);
   }
 
-  create(playerId, name) {
+  isSpectator(room, playerId) {
+    return room.spectators.some((s) => s.id === playerId);
+  }
+
+  create(playerId, name, profile, { practice = false } = {}) {
     if (this.membership.has(playerId)) return { error: 'ALREADY_IN_ROOM' };
     const clean = cleanName(name);
     if (!clean) return { error: 'INVALID_NAME' };
@@ -56,7 +107,10 @@ export class Rooms {
       hostId: playerId,
       phase: 'lobby',
       capacity: this.minPlayers,
-      players: [member(playerId, clean)],
+      practice,
+      settings: defaultSettings(),
+      players: [member(playerId, clean, false, cleanProfile(profile))],
+      spectators: [],
       deadSeen: new Set(),
       game: null,
       session: null,
@@ -69,10 +123,11 @@ export class Rooms {
     return { room };
   }
 
-  join(code, playerId, name) {
+  join(code, playerId, name, profile) {
     if (this.membership.has(playerId)) return { error: 'ALREADY_IN_ROOM' };
     const room = this.get(code);
     if (!room) return { error: 'ROOM_NOT_FOUND' };
+    if (room.practice) return { error: 'ROOM_NOT_FOUND' };
     if (room.phase !== 'lobby') return { error: 'GAME_STARTED' };
     if (room.players.length >= room.capacity) return { error: 'ROOM_FULL' };
     const clean = cleanName(name);
@@ -80,7 +135,20 @@ export class Rooms {
     if (room.players.some((p) => p.name.toLowerCase() === clean.toLowerCase())) {
       return { error: 'NAME_TAKEN' };
     }
-    room.players.push(member(playerId, clean));
+    room.players.push(member(playerId, clean, false, cleanProfile(profile, room.players.length)));
+    this.membership.set(playerId, room.code);
+    return { room };
+  }
+
+  joinSpectator(code, playerId, name, profile) {
+    if (this.membership.has(playerId)) return { error: 'ALREADY_IN_ROOM' };
+    const room = this.get(code);
+    if (!room || room.practice) return { error: 'ROOM_NOT_FOUND' };
+    if (room.spectators.length >= MAX_SPECTATORS) return { error: 'ROOM_FULL' };
+    const clean = cleanName(name);
+    if (!clean) return { error: 'INVALID_NAME' };
+    const { avatar, color } = cleanProfile(profile, room.spectators.length);
+    room.spectators.push({ id: playerId, name: clean, avatar, color, connected: true });
     this.membership.set(playerId, room.code);
     return { room };
   }
@@ -88,6 +156,8 @@ export class Rooms {
   setConnected(playerId, connected) {
     const room = this.roomOf(playerId);
     if (!room) return null;
+    const spectator = room.spectators.find((s) => s.id === playerId);
+    if (spectator) spectator.connected = connected;
     const player = room.players.find((p) => p.id === playerId);
     if (player) player.connected = connected;
     return room;
@@ -101,15 +171,31 @@ export class Rooms {
     return true;
   }
 
-  setCapacity(playerId, capacity) {
+  setSettings(playerId, patch) {
     const room = this.roomOf(playerId);
     if (!room) return { error: 'NOT_IN_ROOM' };
     if (room.hostId !== playerId) return { error: 'NOT_HOST' };
     if (room.phase !== 'lobby') return { error: 'GAME_STARTED' };
-    if (!Number.isInteger(capacity) || capacity < this.minPlayers || capacity > this.maxPlayers) {
-      return { error: 'INVALID_CAPACITY' };
+    if (!patch || typeof patch !== 'object') return { error: 'INVALID_SETTING' };
+
+    const next = { ...room.settings };
+    let capacity = room.capacity;
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === 'capacity') {
+        const valid = Number.isInteger(value) && value >= this.minPlayers && value <= this.maxPlayers;
+        if (!valid || value < room.players.length) return { error: 'INVALID_CAPACITY' };
+        capacity = value;
+      } else if (SETTING_CHOICES[key]) {
+        if (!SETTING_CHOICES[key].includes(value)) return { error: 'INVALID_SETTING' };
+        next[key] = value;
+      } else if (BOOLEAN_SETTINGS.includes(key)) {
+        if (typeof value !== 'boolean') return { error: 'INVALID_SETTING' };
+        next[key] = value;
+      } else {
+        return { error: 'INVALID_SETTING' };
+      }
     }
-    if (capacity < room.players.length) return { error: 'INVALID_CAPACITY' };
+    room.settings = next;
     room.capacity = capacity;
     return { room };
   }
@@ -117,6 +203,11 @@ export class Rooms {
   removePlayer(playerId) {
     const room = this.roomOf(playerId);
     if (!room) return null;
+    if (this.isSpectator(room, playerId)) {
+      room.spectators = room.spectators.filter((s) => s.id !== playerId);
+      this.membership.delete(playerId);
+      return { room, closed: false, hostChanged: false };
+    }
     const player = room.players.find((p) => p.id === playerId);
     this.membership.delete(playerId);
     if (room.phase === 'lobby') {
@@ -142,12 +233,25 @@ export class Rooms {
     const room = this.roomOf(hostId);
     if (!room) return { error: 'NOT_IN_ROOM' };
     if (room.hostId !== hostId) return { error: 'NOT_HOST' };
-    if (room.phase !== 'lobby') return { error: 'GAME_STARTED' };
     if (targetId === hostId) return { error: 'INVALID_TARGET' };
+    if (this.isSpectator(room, targetId)) {
+      this.removePlayer(targetId);
+      return { room, kickedId: targetId };
+    }
+    if (room.phase !== 'lobby') return { error: 'GAME_STARTED' };
     const target = room.players.find((p) => p.id === targetId && !p.isBot);
     if (!target) return { error: 'INVALID_TARGET' };
     this.removePlayer(targetId);
     return { room, kickedId: targetId };
+  }
+
+  shuffled(list) {
+    const copy = [...list];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
   }
 
   prepareStart(playerId, fillWithBots) {
@@ -160,13 +264,11 @@ export class Rooms {
     const toAdd = fillWithBots ? Math.max(this.minPlayers, room.capacity) - room.players.length : 0;
     if (toAdd > 0) {
       const taken = new Set(room.players.map((p) => p.name.toLowerCase()));
-      let number = 1;
-      for (let added = 0; added < toAdd; ) {
-        const name = `Bot ${number}`;
-        number += 1;
-        if (taken.has(name.toLowerCase())) continue;
-        room.players.push(member(`bot-${room.code}-${number - 1}`, name, true));
-        added += 1;
+      const names = this.shuffled(BOT_NAMES).filter((name) => !taken.has(name.toLowerCase()));
+      for (let i = 0; i < toAdd; i++) {
+        const name = names[i] ?? `${names[i % names.length]} ${i}`;
+        const profile = cleanProfile(null, Math.floor(this.rng() * 1000));
+        room.players.push(member(`bot-${room.code}-${i + 1}`, name, true, profile));
       }
     }
     return { room };
@@ -184,6 +286,23 @@ export class Rooms {
     room.phase = 'lobby';
     room.chat = [];
     room.deadSeen = new Set();
+    room.lastChat = new Map();
+    return { room };
+  }
+
+  rematch(playerId) {
+    const room = this.roomOf(playerId);
+    if (!room) return { error: 'NOT_IN_ROOM' };
+    if (room.hostId !== playerId) return { error: 'NOT_HOST' };
+    if (room.phase !== 'ended') return { error: 'GAME_NOT_ENDED' };
+    room.session?.destroy();
+    room.session = null;
+    room.game = null;
+    room.players = room.players.filter((p) => !p.left);
+    room.phase = 'lobby';
+    room.chat = [];
+    room.deadSeen = new Set();
+    room.lastChat = new Map();
     return { room };
   }
 
@@ -193,26 +312,56 @@ export class Rooms {
     return Boolean(gamePlayer) && !gamePlayer.alive;
   }
 
+  roleOf(room, playerId) {
+    return room.game?.players.find((p) => p.id === playerId)?.role ?? null;
+  }
+
   chatBlock(room, playerId) {
+    if (this.isSpectator(room, playerId)) return 'SPECTATOR';
     const player = room.players.find((p) => p.id === playerId);
     if (!player || player.left) return 'NOT_IN_ROOM';
     if (room.phase !== 'playing') return null;
     if (this.isDead(room, playerId)) return null;
-    if (room.game.phase === 'discussion') return null;
-    if (room.game.phase === 'defense' && room.game.accused === playerId) return null;
+    const { game } = room;
+    if (game.phase === 'night') {
+      const mafiaAlive = game.players.filter((p) => p.alive && p.role === 'mafia').length;
+      return this.roleOf(room, playerId) === 'mafia' && mafiaAlive >= 2 ? null : 'CHAT_CLOSED';
+    }
+    if (game.phase === 'discussion') return null;
+    if (game.phase === 'defense' && game.accused === playerId) return null;
     return 'CHAT_CLOSED';
   }
 
-  visibleChat(room, playerId) {
-    const seesDead = room.phase === 'ended' || this.isDead(room, playerId);
-    return room.chat.filter((message) => message.channel !== 'dead' || seesDead);
+  channelFor(room, playerId) {
+    if (room.phase !== 'playing') return 'main';
+    if (this.isDead(room, playerId)) return 'dead';
+    return room.game.phase === 'night' ? 'mafia' : 'main';
   }
 
-  postChat(room, playerId, rawText, now) {
+  visibleChat(room, viewerId) {
+    const ended = room.phase === 'ended';
+    const spectator = this.isSpectator(room, viewerId);
+    const dead = this.isDead(room, viewerId);
+    const mafia = !spectator && room.phase === 'playing' && this.roleOf(room, viewerId) === 'mafia';
+    return room.chat.filter((message) => {
+      if (message.channel === 'dead') return ended || dead;
+      if (message.channel === 'mafia') return ended || mafia;
+      return true;
+    });
+  }
+
+  postMessage(room, playerId, body, now) {
     const blocked = this.chatBlock(room, playerId);
     if (blocked) return { error: blocked };
-    const text = cleanMessage(rawText);
-    if (!text) return { error: 'EMPTY_MESSAGE' };
+    let content;
+    if (body.quick !== undefined) {
+      if (!QUICK_IDS.includes(body.quick)) return { error: 'INVALID_QUICK' };
+      content = { text: null, quick: body.quick };
+    } else {
+      const text = cleanMessage(body.text);
+      if (!text) return { error: 'EMPTY_MESSAGE' };
+      content = { text };
+    }
     const last = room.lastChat.get(playerId) ?? 0;
     if (now - last < CHAT_INTERVAL_MS) return { error: 'CHAT_RATE_LIMITED' };
     room.lastChat.set(playerId, now);
@@ -222,8 +371,8 @@ export class Rooms {
       id: room.chatSeq,
       playerId,
       name: player.name,
-      text,
-      channel: this.isDead(room, playerId) ? 'dead' : 'main',
+      ...content,
+      channel: this.channelFor(room, playerId),
       at: now,
       day: room.game ? room.game.day : 0,
       phase: room.game ? room.game.phase : room.phase,
@@ -231,6 +380,14 @@ export class Rooms {
     room.chat.push(message);
     if (room.chat.length > CHAT_HISTORY) room.chat.shift();
     return { message };
+  }
+
+  postChat(room, playerId, rawText, now) {
+    return this.postMessage(room, playerId, { text: rawText }, now);
+  }
+
+  postQuick(room, playerId, id, now) {
+    return this.postMessage(room, playerId, { quick: id ?? null }, now);
   }
 
   postBotChat(room, botId, line, now) {
@@ -249,7 +406,7 @@ export class Rooms {
       playerId: botId,
       name: bot.name,
       text: null,
-      channel: 'main',
+      channel: room.game.phase === 'night' ? 'mafia' : 'main',
       template: { key: line.key, variant: line.variant, params: { ...line.params } },
       at: now,
       day: room.game.day,
@@ -265,17 +422,22 @@ export class Rooms {
       code: room.code,
       hostId: room.hostId,
       phase: room.phase,
+      practice: room.practice,
       minPlayers: this.minPlayers,
       maxPlayers: this.maxPlayers,
       capacity: room.capacity,
-      players: room.players.map(({ id, name, isBot, connected, left, replaced }) => ({
+      settings: room.settings,
+      players: room.players.map(({ id, name, isBot, connected, left, replaced, avatar, color }) => ({
         id,
         name,
         isBot,
         connected,
         left,
         replaced: Boolean(replaced),
+        avatar,
+        color,
       })),
+      spectators: room.spectators.map(({ id, name, avatar, color }) => ({ id, name, avatar, color })),
     };
   }
 
@@ -283,7 +445,7 @@ export class Rooms {
     room.session?.destroy();
     room.session = null;
     this.rooms.delete(room.code);
-    room.players.forEach((p) => {
+    [...room.players, ...room.spectators].forEach((p) => {
       if (this.membership.get(p.id) === room.code) this.membership.delete(p.id);
     });
   }

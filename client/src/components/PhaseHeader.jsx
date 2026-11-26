@@ -19,12 +19,16 @@ export default function PhaseHeader({ view }) {
           )}
         </p>
       </div>
-      <p className="role-chip" aria-label={t('game.yourRole')}>
-        <span aria-hidden="true" data-role={view.me.role}>
-          {SUITS[view.me.role]}
-        </span>
-        {t(`role.${view.me.role}`)}
-      </p>
+      {view.me.role ? (
+        <p className="role-chip" aria-label={t('game.yourRole')}>
+          <span aria-hidden="true" data-role={view.me.role}>
+            {SUITS[view.me.role]}
+          </span>
+          {t(`role.${view.me.role}`)}
+        </p>
+      ) : (
+        <p className="role-chip">{t('spectator.badge')}</p>
+      )}
     </header>
   );
 }

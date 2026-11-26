@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react';
 import { useI18n } from '../i18n/index.jsx';
 import { useConnection } from '../net/ConnectionProvider.jsx';
 import { useGameAlerts } from '../hooks/useGameAlerts.js';
+import Announcer from '../components/Announcer.jsx';
 import DeadChat from '../components/DeadChat.jsx';
+import HintBar from '../components/HintBar.jsx';
+import SettingsButton from '../settings/SettingsPanel.jsx';
 import ErrorText from '../components/ErrorText.jsx';
 import HowToButton from '../components/HowToButton.jsx';
 import PhaseHeader from '../components/PhaseHeader.jsx';
@@ -13,10 +16,19 @@ import VoteScreen from './game/VoteScreen.jsx';
 import ResultScreen from './game/ResultScreen.jsx';
 import TrialScreen from './game/TrialScreen.jsx';
 import EndScreen from './game/EndScreen.jsx';
+import SpectatorScreen from './game/SpectatorScreen.jsx';
 
-function LeaveControl({ onLeave }) {
+function LeaveControl({ onLeave, spectating }) {
   const { t } = useI18n();
   const [asking, setAsking] = useState(false);
+
+  if (spectating) {
+    return (
+      <button type="button" className="button quiet" onClick={onLeave}>
+        {t('lobby.leave')}
+      </button>
+    );
+  }
 
   if (!asking) {
     return (
@@ -73,10 +85,13 @@ export default function Game() {
     if (result.error) setError(result.error);
   }
 
-  const extraSide = !view.me.alive && view.phase !== 'ended' ? <DeadChat /> : null;
+  const spectating = view.spectator === true;
+  const extraSide = !spectating && !view.me.alive && view.phase !== 'ended' ? <DeadChat /> : null;
   const props = { view, act, busy, extraSide };
   let body = null;
-  switch (view.phase) {
+  if (spectating && view.phase !== 'ended') {
+    body = <SpectatorScreen {...props} />;
+  } else switch (view.phase) {
     case 'night':
       body = <NightScreen {...props} />;
       break;
@@ -101,12 +116,17 @@ export default function Game() {
   }
 
   return (
-    <main className="screen game">
+    <main className="screen game" id="main" tabIndex={-1}>
+      <div className="game-tools">
+        <SettingsButton />
+      </div>
+      <Announcer view={view} />
       <PhaseHeader view={view} />
+      {state.room?.practice && <HintBar view={view} />}
       {body}
       <ErrorText code={error} />
       <HowToButton />
-      {view.phase !== 'ended' && <LeaveControl onLeave={leave} />}
+      {view.phase !== 'ended' || spectating ? <LeaveControl onLeave={leave} spectating={spectating} /> : null}
     </main>
   );
 }

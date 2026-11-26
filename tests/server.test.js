@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { io as ioClient } from 'socket.io-client';
 import { createServer } from '../server.js';
+import { BOT_NAMES } from '../engine/botnames.js';
+import { AVATARS, COLORS } from '../profile.js';
 
 const FAST = { seconds: { night: 0.6, report: 0.1, discussion: 0.8, vote: 0.6, defense: 0.4, revote: 0.3, result: 0.3 } };
 
@@ -467,7 +469,7 @@ test('bots talk in the chat with translatable lines', async () => {
     await until(() => botLines().length >= 3, 12000);
     for (const { payload } of botLines()) {
       assert.equal(payload.text, null);
-      assert.match(payload.name, /^Bot \d$/);
+      assert.ok(BOT_NAMES.includes(payload.name));
       assert.equal(payload.phase, 'discussion');
       assert.ok(Number.isInteger(payload.template.variant));
       assert.equal(typeof payload.template.key, 'string');
@@ -576,5 +578,259 @@ test('a leaving host passes the room to the next human and bots keep the seat', 
     await until(() => roomState(a).hostId !== host.playerId);
     assert.ok([a.playerId, b.playerId].includes(roomState(a).hostId));
     assert.equal(roomState(a).players.find((p) => p.id === host.playerId).isBot, true);
+  });
+});
+
+test('the host can change game settings and bad values are refused', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 2);
+    const [host, guest] = players;
+    assert.deepEqual(await ask(guest, 'room:settings', { discussionSeconds: 60 }), { error: 'NOT_HOST' });
+    const bad = [
+      { discussionSeconds: 61 },
+      { nightSeconds: '30' },
+      { voteSeconds: 5 },
+      { mafiaCount: 4 },
+      { mafiaCount: 'many' },
+      { publicVotes: 'yes' },
+      { revealDeadRoles: 1 },
+      { unknown: 1 },
+    ];
+    for (const patch of bad) assert.deepEqual(await ask(host, 'room:settings', patch), { error: 'INVALID_SETTING' }, JSON.stringify(patch));
+    const ok = await ask(host, 'room:settings', {
+      discussionSeconds: 60,
+      nightSeconds: 45,
+      voteSeconds: 20,
+      mafiaCount: 2,
+      publicVotes: true,
+      revealDeadRoles: false,
+      capacity: 8,
+    });
+    assert.equal(ok.ok, true);
+    await until(() => roomState(guest).settings.discussionSeconds === 60);
+    assert.deepEqual(roomState(guest).settings, {
+      discussionSeconds: 60,
+      nightSeconds: 45,
+      voteSeconds: 20,
+      mafiaCount: 2,
+      publicVotes: true,
+      revealDeadRoles: false,
+    });
+    assert.deepEqual(await ask(host, 'room:settings', { discussionSeconds: 90, nightSeconds: 99 }), { error: 'INVALID_SETTING' });
+    await sleep(100);
+    assert.equal(roomState(host).settings.discussionSeconds, 60);
+  });
+});
+
+test('settings change the game that starts', async () => {
+  await withServer({}, async ({ connect, server }) => {
+    const { players, code } = await fillRoom(connect, 2);
+    const [host] = players;
+    await ask(host, 'room:settings', {
+      capacity: 8,
+      mafiaCount: 2,
+      discussionSeconds: 60,
+      nightSeconds: 45,
+      voteSeconds: 20,
+      publicVotes: true,
+      revealDeadRoles: false,
+    });
+    await ask(host, 'room:start', { fillWithBots: true });
+    await until(() => view(host));
+    const { game } = server.rooms.get(code);
+    assert.equal(game.players.length, 8);
+    assert.equal(game.players.filter((p) => p.role === 'mafia').length, 2);
+    assert.equal(game.config.seconds.discussion, 60);
+    assert.equal(game.config.seconds.night, 45);
+    assert.equal(game.config.seconds.vote, 20);
+    assert.equal(game.config.publicVotes, true);
+    assert.equal(game.config.revealRoleOnKick, false);
+    assert.equal(game.config.revealRoleOnNightDeath, false);
+    const left = view(host).deadline - view(host).serverNow;
+    assert.ok(left > 40000 && left <= 45000);
+  });
+});
+
+test('the mafia talk privately at night and nobody else hears them', async () => {
+  const config = { seconds: { night: 4, report: 0.1, discussion: 3, vote: 0.6, result: 0.3, defense: 0.4, revote: 0.3 } };
+  await withServer({ gameConfig: config }, async ({ connect }) => {
+    const host = await connect();
+    const created = await ask(host, 'room:create', { name: 'Host' });
+    await ask(host, 'room:settings', { capacity: 8, mafiaCount: 2 });
+    const players = [host];
+    for (let i = 1; i < 8; i++) {
+      const guest = await connect();
+      await ask(guest, 'room:join', { code: created.code, name: `Player ${i}` });
+      players.push(guest);
+    }
+    await ask(host, 'room:start', {});
+    await until(() => players.every((p) => view(p)));
+
+    const mafia = players.filter((p) => view(p).me.role === 'mafia');
+    const town = players.filter((p) => view(p).me.role !== 'mafia');
+    assert.equal(mafia.length, 2);
+    assert.deepEqual(await ask(town[0], 'chat:send', { text: 'anyone there?' }), { error: 'CHAT_CLOSED' });
+    assert.deepEqual(await ask(town[0], 'chat:quick', { id: 'hello' }), { error: 'CHAT_CLOSED' });
+
+    assert.equal((await ask(mafia[0], 'chat:send', { text: 'take the doctor' })).ok, true);
+    await until(() => mafia[1].log.some((e) => e.event === 'chat:message' && e.payload.text === 'take the doctor' && e.payload.channel === 'mafia'));
+    await sleep(200);
+    assert.ok(town.every((p) => !p.log.some((e) => e.event === 'chat:message' && e.payload.text === 'take the doctor')));
+
+    await until(() => players.every((p) => view(p)?.phase === 'discussion'), 10000);
+    assert.equal((await ask(mafia[0], 'chat:send', { text: 'hello town' })).ok, true);
+    await until(() => town[0].log.some((e) => e.event === 'chat:message' && e.payload.text === 'hello town' && e.payload.channel === 'main'));
+  });
+});
+
+test('a lone mafia member has nobody to whisper to', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 6);
+    await ask(players[0], 'room:start', {});
+    await until(() => players.every((p) => view(p)));
+    const mafia = players.find((p) => view(p).me.role === 'mafia');
+    assert.deepEqual(await ask(mafia, 'chat:send', { text: 'psst' }), { error: 'CHAT_CLOSED' });
+  });
+});
+
+test('quick reactions and phrases are validated and translated by the readers', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 2);
+    const [host, guest] = players;
+    assert.equal((await ask(host, 'chat:quick', { id: 'hello' })).ok, true);
+    await until(() => guest.log.some((e) => e.event === 'chat:message' && e.payload.quick === 'hello'));
+    const message = guest.log.find((e) => e.event === 'chat:message').payload;
+    assert.equal(message.text, null);
+    assert.equal(message.channel, 'main');
+    assert.deepEqual(await ask(host, 'chat:quick', { id: '👍' }), { error: 'CHAT_RATE_LIMITED' });
+    await sleep(800);
+    assert.equal((await ask(host, 'chat:quick', { id: '👍' })).ok, true);
+    await sleep(800);
+    for (const id of ['💥', '', 5, null, undefined, { a: 1 }]) {
+      assert.deepEqual(await ask(host, 'chat:quick', { id }), { error: 'INVALID_QUICK' }, String(id));
+      await sleep(10);
+    }
+  });
+});
+
+test('the lobby has a chat of its own', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 2);
+    const [host, guest] = players;
+    assert.equal((await ask(host, 'chat:send', { text: 'welcome' })).ok, true);
+    await until(() => guest.log.some((e) => e.event === 'chat:message' && e.payload.text === 'welcome' && e.payload.phase === 'lobby'));
+  });
+});
+
+test('the host can play again with the same players and bots', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 2);
+    const [host, guest] = players;
+    assert.deepEqual(await ask(host, 'room:rematch', {}), { error: 'GAME_NOT_ENDED' });
+    await ask(host, 'room:start', { fillWithBots: true });
+    await until(() => view(host) && view(guest));
+    const botIds = roomState(host).players.filter((p) => p.isBot).map((p) => p.id).sort();
+    const stop = autoplay([host, guest]);
+    await until(() => view(host).phase === 'ended' && view(guest).phase === 'ended', 40000);
+    stop();
+    assert.deepEqual(await ask(guest, 'room:rematch', {}), { error: 'NOT_HOST' });
+    assert.equal((await ask(host, 'room:rematch', {})).ok, true);
+    await until(() => view(host).phase === 'night' && view(host).day === 1 && !view(host).winner);
+    await until(() => view(guest).phase === 'night' && view(guest).day === 1 && !view(guest).winner);
+    assert.equal(roomState(host).phase, 'playing');
+    assert.equal(roomState(host).players.length, 6);
+    assert.deepEqual(roomState(host).players.filter((p) => p.isBot).map((p) => p.id).sort(), botIds);
+    assert.equal(view(host).events.length, 0);
+  });
+});
+
+test('friends can watch a game without seeing any secrets', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players, code } = await fillRoom(connect, 6);
+    const watcherBefore = await connect();
+    assert.equal((await ask(watcherBefore, 'room:join', { code, name: 'Early', spectator: true })).spectator, true);
+    await ask(players[0], 'room:start', {});
+    await until(() => players.every((p) => view(p)) && view(watcherBefore));
+    assert.equal(view(watcherBefore).spectator, true);
+    assert.equal(view(watcherBefore).me.role, null);
+    assert.ok(view(watcherBefore).players.every((p) => p.role === null));
+
+    const late = await connect();
+    assert.equal((await ask(late, 'room:join', { code, name: 'Late', spectator: true })).ok, true);
+    await until(() => view(late));
+    assert.equal(roomState(players[0]).spectators.length, 2);
+    assert.equal(roomState(players[0]).players.length, 6);
+
+    assert.deepEqual(await ask(late, 'chat:send', { text: 'hi' }), { error: 'SPECTATOR' });
+    assert.deepEqual(await ask(late, 'chat:quick', { id: 'hello' }), { error: 'SPECTATOR' });
+    assert.deepEqual(await ask(late, 'game:action', { action: { type: 'night', target: null } }), { error: 'NOT_IN_GAME' });
+
+    assert.equal((await ask(players[0], 'room:kick', { playerId: late.playerId })).ok, true);
+    await until(() => late.log.some((e) => e.event === 'room:kicked'));
+    await until(() => roomState(players[0]).spectators.length === 1);
+    assert.equal((await ask(watcherBefore, 'room:leave', {})).ok, true);
+    await until(() => roomState(players[0]).spectators.length === 0);
+  });
+});
+
+test('avatar and color are checked and shared with the room', async () => {
+  await withServer({}, async ({ connect }) => {
+    const host = await connect();
+    const created = await ask(host, 'room:create', { name: 'Host', avatar: AVATARS[5], color: 'blue' });
+    const guest = await connect();
+    await ask(guest, 'room:join', { code: created.code, name: 'Guest', avatar: '<img src=x>', color: 'neon' });
+    await until(() => roomState(host).players.length === 2);
+    const [first, second] = roomState(host).players;
+    assert.equal(first.avatar, AVATARS[5]);
+    assert.equal(first.color, 'blue');
+    assert.ok(AVATARS.includes(second.avatar));
+    assert.ok(COLORS.includes(second.color));
+  });
+});
+
+test('bots get different Egyptian names', async () => {
+  await withServer({}, async ({ connect }) => {
+    const { players } = await fillRoom(connect, 2);
+    await ask(players[0], 'room:settings', { capacity: 12 });
+    await ask(players[0], 'room:start', { fillWithBots: true });
+    await until(() => roomState(players[0]).players.length === 12);
+    const bots = roomState(players[0]).players.filter((p) => p.isBot);
+    assert.equal(bots.length, 10);
+    assert.equal(new Set(bots.map((b) => b.name)).size, 10);
+    bots.forEach((b) => assert.ok(BOT_NAMES.includes(b.name)));
+    bots.forEach((b) => assert.ok(AVATARS.includes(b.avatar)));
+  });
+});
+
+test('a player who stops responding is replaced by a bot', async () => {
+  const config = { seconds: { night: 0.6, report: 0.1, discussion: 0.5, vote: 0.6, result: 0.2, defense: 0.3, revote: 0.3 }, afkStrikes: 1 };
+  await withServer({ gameConfig: config }, async ({ connect, server }) => {
+    const { players } = await fillRoom(connect, 2);
+    const [host, idle] = players;
+    await ask(host, 'room:start', { fillWithBots: true });
+    await until(() => view(host) && view(idle));
+    const stop = autoplay([host]);
+    await until(() => idle.log.some((e) => e.event === 'room:replaced'), 20000);
+    stop();
+    assert.deepEqual(idle.log.find((e) => e.event === 'room:replaced').payload, { reason: 'inactive' });
+    await until(() => roomState(host).players.find((p) => p.id === idle.playerId)?.isBot === true);
+    assert.equal(roomState(host).players.find((p) => p.id === idle.playerId).replaced, true);
+    assert.equal(server.rooms.roomOf(idle.playerId), null);
+    assert.ok(view(host).events.some((e) => e.key === 'player.replaced'));
+  });
+});
+
+test('practice rooms start at once against bots and cannot be joined', async () => {
+  await withServer({}, async ({ connect }) => {
+    const learner = await connect();
+    const started = await ask(learner, 'room:practice', { name: 'Learner' });
+    assert.equal(started.ok, true);
+    await until(() => view(learner) && roomState(learner));
+    assert.equal(roomState(learner).practice, true);
+    assert.equal(roomState(learner).players.length, 6);
+    assert.equal(roomState(learner).players.filter((p) => p.isBot).length, 5);
+    const other = await connect();
+    assert.deepEqual(await ask(other, 'room:join', { code: started.code, name: 'Other' }), { error: 'ROOM_NOT_FOUND' });
+    assert.deepEqual(await ask(other, 'room:join', { code: started.code, name: 'Other', spectator: true }), { error: 'ROOM_NOT_FOUND' });
   });
 });

@@ -23,6 +23,7 @@ export function createBotTeam(game, rng) {
   const spoken = new Map();
   const plans = new Map();
   const defended = new Set();
+  const personas = new Map();
 
   const freshMemory = () => ({
     known: new Set(),
@@ -37,6 +38,12 @@ export function createBotTeam(game, rng) {
   game.players.filter((p) => p.isBot).forEach((p) => memories.set(p.id, freshMemory()));
 
   let hasBots = memories.size > 0;
+  const PERSONAS = ['talkative', 'quiet', 'suspicious', 'balanced', 'balanced'];
+  const personaOf = (botId) => {
+    if (!personas.has(botId)) personas.set(botId, pick(PERSONAS, rng));
+    return personas.get(botId);
+  };
+
   const aliveOthers = (id) => alivePlayers(game).filter((p) => p.id !== id);
   const spokeOn = (day, id) => spoken.get(`${day}:${id}`) ?? 0;
 
@@ -75,8 +82,9 @@ export function createBotTeam(game, rng) {
     if (memo.cleared.has(targetId)) return -100;
     if (me.role === Role.MAFIA && target.role === Role.MAFIA) return -100;
 
-    let score = rng() * 0.4;
-    score += mentionWeight(targetId, botId);
+    const persona = personaOf(botId);
+    let score = rng() * (persona === 'suspicious' ? 0.7 : 0.4);
+    score += mentionWeight(targetId, botId) * (persona === 'suspicious' ? 1.3 : 1);
     score += quietness(targetId);
     score += mislead(targetId);
     if (claims.has(targetId) && targetId !== botId) {
@@ -211,6 +219,18 @@ export function createBotTeam(game, rng) {
       });
   }
 
+  function chatTurns(botId) {
+    if (game.phase !== Phase.DISCUSSION) return 1;
+    switch (personaOf(botId)) {
+      case 'talkative':
+        return 2 + Math.floor(rng() * 3);
+      case 'quiet':
+        return rng() < 0.6 ? 1 : 0;
+      default:
+        return 1 + Math.floor(rng() * 3);
+    }
+  }
+
   function nextLine(botId) {
     const bot = findPlayer(game, botId);
     const memo = memories.get(botId);
@@ -223,6 +243,14 @@ export function createBotTeam(game, rng) {
       memo.said.add(mark);
       return true;
     };
+
+    if (game.phase === Phase.NIGHT) {
+      if (bot.role !== Role.MAFIA) return null;
+      const partnerIsHuman = alivePlayers(game).some((p) => p.role === Role.MAFIA && !p.isBot);
+      if (!partnerIsHuman) return null;
+      const target = mafiaPlan('night');
+      return target && once('plan') ? line('plan', { target }) : null;
+    }
 
     if (game.phase === Phase.DEFENSE) {
       return game.accused === botId && once('defense') ? line('defense') : null;
@@ -251,6 +279,10 @@ export function createBotTeam(game, rng) {
 
     const others = aliveOthers(botId);
     if (others.length === 0) return null;
+    if (personaOf(botId) === 'suspicious') {
+      const first = bot.role === Role.MAFIA ? mafiaPlan('vote') : topSuspect(botId, others)?.player.id;
+      if (first && once(`suspect:${first}`)) return line('suspect', { target: first });
+    }
     const silent = others.find((p) => spokeOn(game.day, p.id) === 0 && once(`quiet:${p.id}`));
     if (silent && rng() < 0.5) return line('quiet', { target: silent.id });
 
@@ -277,6 +309,8 @@ export function createBotTeam(game, rng) {
     act,
     observeChat,
     nextLine,
+    chatTurns,
+    persona: personaOf,
     suspicion,
     knowledge: (botId) => memories.get(botId),
   };

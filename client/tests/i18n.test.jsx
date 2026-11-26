@@ -111,7 +111,7 @@ describe('bot chat lines', () => {
 
   it('uses {target} only for lines that name a player', async () => {
     const { LINE_CATEGORIES, LINE_VARIANTS } = await import('../../engine/botlines.js');
-    const named = new Set(['mourn', 'suspect', 'quiet', 'agree', 'ask', 'sure', 'vouch', 'counter']);
+    const named = new Set(['mourn', 'suspect', 'quiet', 'agree', 'ask', 'sure', 'vouch', 'counter', 'plan']);
     for (const category of LINE_CATEGORIES) {
       for (let variant = 0; variant < LINE_VARIANTS; variant++) {
         const text = languages.en.messages[`bot.say.${category}.${variant}`];

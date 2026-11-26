@@ -1,25 +1,33 @@
 import { useState } from 'react';
 import { useI18n } from '../i18n/index.jsx';
 import { useConnection } from '../net/ConnectionProvider.jsx';
+import { useLooks } from '../net/useLooks.js';
+import SettingsButton from '../settings/SettingsPanel.jsx';
+import Avatar from '../components/Avatar.jsx';
+import Chat from '../components/Chat.jsx';
 import ErrorText from '../components/ErrorText.jsx';
 import HowToButton from '../components/HowToButton.jsx';
 import LanguageSwitcher from '../components/LanguageSwitcher.jsx';
+import RulesPanel from '../components/RulesPanel.jsx';
 
 export default function Lobby() {
   const { t } = useI18n();
   const { state, request } = useConnection();
+  const look = useLooks();
   const { room, playerId } = state;
   const [error, setError] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const isPlayer = room.players.some((p) => p.id === playerId);
   const isHost = room.hostId === playerId;
   const count = room.players.length;
   const capacity = room.capacity ?? room.minPlayers;
   const enough = count >= room.minPlayers;
   const hasEmptySeats = count < capacity;
   const smallest = Math.max(room.minPlayers, count);
+  const spectators = room.spectators ?? [];
 
   async function act(event, payload) {
     setBusy(true);
@@ -45,8 +53,9 @@ export default function Lobby() {
   }
 
   return (
-    <main className="screen lobby">
+    <main className="screen lobby" id="main" tabIndex={-1}>
       <header className="topbar">
+        <SettingsButton />
         <LanguageSwitcher />
       </header>
 
@@ -64,6 +73,8 @@ export default function Lobby() {
         </button>
         {copied && <p role="status">{t('lobby.copied')}</p>}
       </section>
+
+      {!isPlayer && <p className="hint">{t('lobby.watching')}</p>}
 
       <section className="stepper" role="group" aria-label={t('lobby.capacity')}>
         <span className="stepper-label">{t('lobby.capacity')}</span>
@@ -103,7 +114,10 @@ export default function Lobby() {
         <ul className="players">
           {room.players.map((player) => (
             <li key={player.id}>
-              <bdi className="name">{player.name}</bdi>
+              <Avatar look={player} />
+              <bdi className="name" data-color={player.color}>
+                {player.name}
+              </bdi>
               {player.id === playerId && <span className="pill">{t('lobby.you')}</span>}
               {player.id === room.hostId && <span className="pill">{t('lobby.host')}</span>}
               {player.isBot && <span className="pill">{t('lobby.bot')}</span>}
@@ -123,6 +137,37 @@ export default function Lobby() {
           ))}
         </ul>
       </section>
+
+      {spectators.length > 0 && (
+        <section>
+          <h2>{t('lobby.spectators')}</h2>
+          <ul className="players watchers">
+            {spectators.map((watcher) => (
+              <li key={watcher.id}>
+                <Avatar look={watcher} />
+                <bdi className="name" data-color={watcher.color}>
+                  {watcher.name}
+                </bdi>
+                {isHost && (
+                  <button
+                    type="button"
+                    className="kick"
+                    aria-label={t('lobby.removeWatcher', { name: watcher.name })}
+                    disabled={busy}
+                    onClick={() => act('room:kick', { playerId: watcher.id })}
+                  >
+                    ✕
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <RulesPanel room={room} isHost={isHost} request={request} />
+
+      <Chat canSend={isPlayer} closedKey="spectator.note" titleKey="lobby.chatTitle" />
 
       {isHost && enough && !confirming && (
         <>
@@ -163,7 +208,7 @@ export default function Lobby() {
         </div>
       )}
 
-      {!isHost && <p>{t('lobby.waitHost')}</p>}
+      {!isHost && isPlayer && <p>{t('lobby.waitHost')}</p>}
 
       <ErrorText code={error} />
 

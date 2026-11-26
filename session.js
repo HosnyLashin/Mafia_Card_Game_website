@@ -1,14 +1,15 @@
-import { createGame, submit, tick, replaceWithBot as handOver, Phase } from './engine/engine.js';
+import { createGame, submit, tick, replaceWithBot as handOver, inactivePlayers, Phase } from './engine/engine.js';
 import { createBotTeam } from './engine/bots.js';
 
 export class GameSession {
-  constructor(room, { now = Date.now, rng = Math.random, config, notify, say = () => null }) {
+  constructor(room, { now = Date.now, rng = Math.random, config, notify, say = () => null, onInactive = null }) {
     this.room = room;
     this.now = now;
     this.rng = rng;
     this.config = config;
     this.notify = notify;
     this.say = say;
+    this.onInactive = onInactive;
     this.team = null;
     this.timer = null;
     this.botTimers = [];
@@ -51,6 +52,10 @@ export class GameSession {
     if (this.destroyed) return;
     clearTimeout(this.timer);
     this.team?.sync();
+    if (this.onInactive && this.game.phase !== Phase.ENDED) {
+      inactivePlayers(this.game).forEach((p) => this.onInactive(this.room, p.id));
+      if (this.destroyed) return;
+    }
     if (this.game.phase === Phase.ENDED) {
       this.clearBots();
       this.clearChat();
@@ -64,6 +69,7 @@ export class GameSession {
   }
 
   scheduleTick() {
+    clearTimeout(this.timer);
     const delay = Math.max(0, this.game.deadline - this.now()) + 5;
     this.timer = setTimeout(() => {
       tick(this.game, this.now());
@@ -108,19 +114,26 @@ export class GameSession {
   scheduleChat() {
     const { game } = this;
     const accusedBot = game.players.find((p) => p.id === game.accused && p.isBot && p.alive);
-    const talking = game.phase === Phase.DISCUSSION || (game.phase === Phase.DEFENSE && accusedBot);
+    const mafiaNight =
+      game.phase === Phase.NIGHT &&
+      game.players.some((p) => p.alive && p.role === 'mafia' && !p.isBot) &&
+      game.players.some((p) => p.alive && p.role === 'mafia' && p.isBot);
+    const talking = game.phase === Phase.DISCUSSION || (game.phase === Phase.DEFENSE && accusedBot) || mafiaNight;
     const key = talking ? `${game.phase}:${game.day}:${game.accused ?? ''}` : null;
     if (key === this.chatKey) return;
     this.clearChat();
     this.chatKey = key;
     if (!key || !this.team) return;
 
-    const speakers = game.players.filter(
-      (p) => p.isBot && p.alive && (game.phase === Phase.DISCUSSION || p.id === game.accused),
-    );
+    const speakers = game.players.filter((p) => {
+      if (!p.isBot || !p.alive) return false;
+      if (game.phase === Phase.DEFENSE) return p.id === game.accused;
+      if (game.phase === Phase.NIGHT) return p.role === 'mafia';
+      return true;
+    });
     const span = Math.max(300, (game.deadline - this.now()) * 0.7);
     speakers.forEach((bot) => {
-      const turns = game.phase === Phase.DISCUSSION ? 1 + Math.floor(this.rng() * 3) : 1;
+      const turns = this.team.chatTurns(bot.id);
       for (let turn = 0; turn < turns; turn++) {
         const delay = 100 + (span * (turn + this.rng())) / turns;
         this.chatTimers.push(
